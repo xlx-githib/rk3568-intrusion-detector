@@ -116,4 +116,4 @@ rknn_destroy(ctx);                     // 结束
 - [ ] `yolo.cc` 导读：反量化 `deqnt_affine_to_f32`、三尺度解码 `process_i8/process_fp`、NMS、坐标回映射
 - [ ] RKNN 输入/输出 零拷贝版本 (`rknn_create_mem`) —— 高性能工程化可选
 - [ ] letterbox 手工推导 + 画框坐标映射公式
-- [ ] 面试口径：为什么 NPU 快 / 什么是 int8 量化 / q8 与 fp 区别
+- [ ] 知识自查：为什么 NPU 快 / 什么是 int8 量化 / q8 与 fp 区别
