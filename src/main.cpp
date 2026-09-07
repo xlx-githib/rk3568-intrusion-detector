@@ -20,6 +20,7 @@
 #include "infer/rknn_engine.hpp"
 #include "business/roi_monitor.hpp"
 #include "capture/v4l2_camera.hpp"
+#include "output/reporter.hpp"
 
 // 在 RGB 图上画红色矩形边框，写 PPM(P6)
 static void draw_boxes_and_write_ppm(const std::string& path,
@@ -192,9 +193,10 @@ struct EventMsg {                        // 业务线程 → 输出线程
     std::vector<DetObject> dets;
 };
 
-// ============ 模式4：四线程流水线（Capture→Infer→Business→Output）============
+// ============ 模式4：四线程流水线（Capture→Infer→Business→Output→上报）============
 static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
-                    bool use_v7, int max_frames) {
+                    bool use_v7, int max_frames,
+                    const char* report_ip, int report_port) {
     RknnEngine eng;
     if (!eng.init(model, make_params(use_v7), {0, 2})) return -1;
     RoiMonitor mon;
@@ -203,8 +205,14 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
     if (!cam.open("/dev/video0", 1280, 720)) return -1;
     if (!cam.start()) return -1;
     mkdir("shots", 0755);
-    printf("[pipe] 四线程流水线 /dev/video0 ROI=(%d,%d,%d,%d) stay=%ds max=%d帧\n",
-           roi.x, roi.y, roi.w, roi.h, stay_sec, max_frames);
+
+    Reporter rep;
+    rep.init(report_ip && report_ip[0], report_ip ? report_ip : "", report_port);
+    if (report_ip && report_ip[0]) rep.connect();
+
+    printf("[pipe] 四线程流水线 ROI=(%d,%d,%d,%d) stay=%ds max=%d帧 上报=%s:%d\n",
+           roi.x, roi.y, roi.w, roi.h, stay_sec, max_frames,
+           (report_ip && report_ip[0]) ? report_ip : "(off)", report_port);
 
     BlockQueue<FramePtr> rawQ(2);                       // Capture→Infer
     BlockQueue<std::shared_ptr<InferOut>> resQ(2);      // Infer→Business
@@ -264,15 +272,18 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
                                          int(em->frame->width), int(em->frame->height), em->dets);
                 printf("[pipe] ALARM -> %s (stay=%llu ms)\n", shot,
                        (unsigned long long)em->ev.stay_ms);
+                rep.report(em->ev, shot);
             } else {
                 printf("[pipe] EVENT %-7s stay=%llu ms\n", ev_name(em->ev.type),
                        (unsigned long long)em->ev.stay_ms);
+                rep.report(em->ev);
             }
             nEvent++;
         }
     });
 
     capT.join(); infT.join(); bizT.join(); outT.join();
+    rep.disconnect();
     auto t1 = std::chrono::steady_clock::now();
     double dt = std::chrono::duration<double>(t1 - t0).count();
     printf("[pipe] 结束: infer %d 帧 / %.1f s = %.1f fps, 事件 %d(告警 %d)\n",
@@ -317,7 +328,7 @@ int main(int argc, char** argv) {
     // ---- 模式4：四线程流水线 ----
     if (argc >= 3 && strcmp(argv[2], "pipe") == 0) {
         if (argc < 7) {
-            printf("用法: %s <model> pipe <roi_x> <roi_y> <roi_w> <roi_h> [stay_sec] [yolov5|yolov7] [max_frames]\n", argv[0]);
+            printf("用法: %s <model> pipe <roi_x> <roi_y> <roi_w> <roi_h> [stay_sec] [yolov5|yolov7] [max_frames] [report_ip report_port]\n", argv[0]);
             return -1;
         }
         RoiRect roi;
@@ -326,7 +337,9 @@ int main(int argc, char** argv) {
         int stay = (argc > 7) ? atoi(argv[7]) : 3;
         bool v7 = (argc < 9 || strcmp(argv[8], "yolov7") == 0);
         int maxf = (argc > 9) ? atoi(argv[9]) : 300;
-        return run_pipe(argv[1], roi, stay, v7, maxf);
+        const char* rip = (argc > 10) ? argv[10] : "";
+        int rport = (argc > 11) ? atoi(argv[11]) : 9000;
+        return run_pipe(argv[1], roi, stay, v7, maxf, rip, rport);
     }
 
     // ---- 模式1：单图（D4）----

@@ -30,6 +30,7 @@ set(SRC
     ${CMAKE_SOURCE_DIR}/src/capture/v4l2_camera.cpp
     ${CMAKE_SOURCE_DIR}/src/infer/rknn_engine.cpp
     ${CMAKE_SOURCE_DIR}/src/business/roi_monitor.cpp
+    ${CMAKE_SOURCE_DIR}/src/output/reporter.cpp
 )
 
 add_executable(rk3568_intrusion ${SRC})
