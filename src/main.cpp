@@ -198,12 +198,13 @@ int main(int argc, char** argv) {
             printf("用法: %s <model> cam <roi_x> <roi_y> <roi_w> <roi_h> [stay_sec] [yolov5|yolov7] [max_frames]\n", argv[0]);
             return -1;
         }
+        // argv[3..6]=roi, argv[7]=stay, argv[8]=yolov5/7, argv[9]=max(注意无 dir 参数)
         RoiRect roi;
-        roi.x = atoi(argv[4]); roi.y = atoi(argv[5]);
-        roi.w = atoi(argv[6]); roi.h = atoi(argv[7]);
-        int stay = (argc > 8) ? atoi(argv[8]) : 3;
-        bool v7 = (argc < 10 || strcmp(argv[9], "yolov7") == 0);
-        int maxf = (argc > 10) ? atoi(argv[10]) : 300;
+        roi.x = atoi(argv[3]); roi.y = atoi(argv[4]);
+        roi.w = atoi(argv[5]); roi.h = atoi(argv[6]);
+        int stay = (argc > 7) ? atoi(argv[7]) : 3;
+        bool v7 = (argc < 9 || strcmp(argv[8], "yolov7") == 0);
+        int maxf = (argc > 9) ? atoi(argv[9]) : 300;
         return run_camera(argv[1], roi, stay, v7, maxf);
     }
 
