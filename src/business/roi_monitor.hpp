@@ -40,5 +40,6 @@ private:
     RoiRect roi_;
     uint64_t stay_us_ = 0;         // 触发告警所需停留时长(us)
     uint64_t ts_start_us_ = 0;     // 进入时刻(us)
+    int cur_cls_ = -1;             // 当前事件触发的类别(person=0/car=2)
     std::vector<int> watch_cls_;   // 关注类别
 };

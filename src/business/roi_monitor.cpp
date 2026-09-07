@@ -12,18 +12,21 @@ void RoiMonitor::configure(const RoiRect& roi, int stay_alarm_sec,
     watch_cls_  = watch_cls;
     st_         = State::IDLE;
     ts_start_us_ = 0;
+    cur_cls_    = -1;
 }
 
 std::vector<Event> RoiMonitor::feed(const std::vector<DetObject>& dets,
                                     uint64_t now_us) {
     std::vector<Event> evs;
 
-    // 帧级判定：是否有白名单目标，且其"框底部中心(bx,by)"落在 ROI 内
+    // 帧级判定：是否有白名单目标，且其"框底部中心(bx,by)"落在 ROI 内；
+    // 记录触发目标的类别(cls)，供事件带上 person/car
     bool inside = false;
+    int  trig_cls = -1;
     for (const auto& o : dets) {
         if (std::find(watch_cls_.begin(), watch_cls_.end(), o.cls_id) == watch_cls_.end())
             continue;
-        if (roi_.contains(o.bx, o.by)) { inside = true; break; }
+        if (roi_.contains(o.bx, o.by)) { inside = true; trig_cls = o.cls_id; break; }
     }
 
     if (inside) {
@@ -31,14 +34,16 @@ std::vector<Event> RoiMonitor::feed(const std::vector<DetObject>& dets,
         case State::IDLE: {                       // 首次进入
             st_ = State::INSIDE;
             ts_start_us_ = now_us;
-            Event e; e.type = EventType::INTRUDE; e.ts_start_us = now_us; e.stay_ms = 0;
+            cur_cls_ = trig_cls;
+            Event e; e.type = EventType::INTRUDE; e.cls_id = trig_cls;
+            e.ts_start_us = now_us; e.stay_ms = 0;
             evs.push_back(e);
             break;
         }
         case State::INSIDE: {                     // 已进入，检查是否达到告警时长
             if (now_us - ts_start_us_ >= stay_us_) {
                 st_ = State::ALARMED;
-                Event e; e.type = EventType::ALARM;
+                Event e; e.type = EventType::ALARM; e.cls_id = cur_cls_;
                 e.ts_start_us = ts_start_us_;
                 e.stay_ms = (now_us - ts_start_us_) / 1000ULL;
                 evs.push_back(e);
@@ -51,7 +56,7 @@ std::vector<Event> RoiMonitor::feed(const std::vector<DetObject>& dets,
     } else {
         switch (st_) {
         case State::INSIDE: {                     // 未超时就离开 → 记录离开
-            Event e; e.type = EventType::LEAVE;
+            Event e; e.type = EventType::LEAVE; e.cls_id = cur_cls_;
             e.ts_start_us = ts_start_us_;
             e.stay_ms = (now_us - ts_start_us_) / 1000ULL;
             evs.push_back(e);
@@ -59,7 +64,7 @@ std::vector<Event> RoiMonitor::feed(const std::vector<DetObject>& dets,
             break;
         }
         case State::ALARMED: {                    // 告警后离开 → 解除告警
-            Event e; e.type = EventType::RESOLVE;
+            Event e; e.type = EventType::RESOLVE; e.cls_id = cur_cls_;
             e.ts_start_us = ts_start_us_;
             e.stay_ms = (now_us - ts_start_us_) / 1000ULL;
             evs.push_back(e);
