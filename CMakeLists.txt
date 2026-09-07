@@ -23,9 +23,12 @@ endif()
 message(STATUS "RKNN_INCLUDE_DIR=${RKNN_INCLUDE_DIR}")
 message(STATUS "RKNN_LIB_DIR=${RKNN_LIB_DIR}")
 
-# ---------------- 源文件 ----------------
-file(GLOB_RECURSE SRC
-    ${CMAKE_SOURCE_DIR}/src/*.cpp
+# ---------------- 源文件（显式列出，新增 .cpp 记得加进来）----------------
+set(SRC
+    ${CMAKE_SOURCE_DIR}/src/main.cpp
+    ${CMAKE_SOURCE_DIR}/src/common/config.cpp
+    ${CMAKE_SOURCE_DIR}/src/infer/rknn_engine.cpp
+    ${CMAKE_SOURCE_DIR}/src/business/roi_monitor.cpp
 )
 
 add_executable(rk3568_intrusion ${SRC})
