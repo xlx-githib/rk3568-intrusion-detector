@@ -27,6 +27,7 @@ message(STATUS "RKNN_LIB_DIR=${RKNN_LIB_DIR}")
 set(SRC
     ${CMAKE_SOURCE_DIR}/src/main.cpp
     ${CMAKE_SOURCE_DIR}/src/common/config.cpp
+    ${CMAKE_SOURCE_DIR}/src/capture/v4l2_camera.cpp
     ${CMAKE_SOURCE_DIR}/src/infer/rknn_engine.cpp
     ${CMAKE_SOURCE_DIR}/src/business/roi_monitor.cpp
 )

@@ -3,6 +3,7 @@
 // 模式2(视频帧序列): rk3568_intrusion <model.rknn> video <dir> <roi_x> <roi_y> <roi_w> <roi_h> [stay_sec] [yolov5|yolov7]
 //   dir 含 meta.txt(4行: w h fps frames) 与 f_0000.rgb...；帧源由 tools/board/video_to_frames.py 生成
 #include <sys/stat.h>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -14,6 +15,7 @@
 
 #include "infer/rknn_engine.hpp"
 #include "business/roi_monitor.hpp"
+#include "capture/v4l2_camera.hpp"
 
 // 在 RGB 图上画红色矩形边框，写 PPM(P6)
 static void draw_boxes_and_write_ppm(const std::string& path,
@@ -127,6 +129,54 @@ static int run_video(const char* model, const char* dir, const RoiRect& roi,
     return 0;
 }
 
+// ============ 模式3：真摄像头实时（M2：V4L2 采集 → 推理 → ROI → 告警，单线程先行）============
+static int run_camera(const char* model, const RoiRect& roi, int stay_sec,
+                      bool use_v7, int max_frames) {
+    RknnEngine eng;
+    if (!eng.init(model, make_params(use_v7), {0, 2})) return -1;
+    RoiMonitor mon;
+    mon.configure(roi, stay_sec, {0, 2});
+
+    V4l2Camera cam;
+    if (!cam.open("/dev/video0", 1280, 720)) return -1;
+    if (!cam.start()) return -1;
+    mkdir("shots", 0755);
+    printf("[cam] /dev/video0 1280x720 ROI=(%d,%d,%d,%d) stay=%ds max=%d帧\n",
+           roi.x, roi.y, roi.w, roi.h, stay_sec, max_frames);
+
+    int got = 0, ev_count = 0, alarm_count = 0;
+    auto t0 = std::chrono::steady_clock::now();
+    while (max_frames <= 0 || got < max_frames) {
+        FramePtr f;
+        if (!cam.getFrame(f, 1000)) { printf("[cam] 取帧超时\n"); continue; }
+        std::vector<DetObject> dets;
+        eng.infer(f, dets);
+        std::vector<Event> evs = mon.feed(dets, f->pts_us);   // 用真实时间戳
+        for (const auto& e : evs) {
+            ev_count++;
+            if (e.type == EventType::ALARM) {
+                alarm_count++;
+                char shot[256];
+                snprintf(shot, sizeof(shot), "shots/cam_alarm_%06u.ppm",
+                         unsigned(f->pts_us % 1000000));
+                draw_boxes_and_write_ppm(shot, f->data, int(f->width), int(f->height), dets);
+                printf("[cam] EVENT ALARM -> %s\n", shot);
+            } else {
+                printf("[cam] EVENT %-7s stay=%llu ms\n", ev_name(e.type),
+                       (unsigned long long)e.stay_ms);
+            }
+        }
+        if (++got % 10 == 0) printf("[cam] 已处理 %d 帧\n", got);
+    }
+    auto t1 = std::chrono::steady_clock::now();
+    double dt = std::chrono::duration<double>(t1 - t0).count();
+    printf("[cam] 结束: %d 帧 / %.1f s = %.1f fps, 事件 %d(告警 %d)\n",
+           got, dt, dt > 0 ? got / dt : 0, ev_count, alarm_count);
+    eng.release();
+    cam.close();
+    return 0;
+}
+
 int main(int argc, char** argv) {
     // ---- 模式2：视频帧序列 ----
     if (argc >= 3 && strcmp(argv[2], "video") == 0) {
@@ -142,10 +192,26 @@ int main(int argc, char** argv) {
         return run_video(argv[1], argv[3], roi, stay, v7);
     }
 
+    // ---- 模式3：真摄像头实时 ----
+    if (argc >= 3 && strcmp(argv[2], "cam") == 0) {
+        if (argc < 7) {
+            printf("用法: %s <model> cam <roi_x> <roi_y> <roi_w> <roi_h> [stay_sec] [yolov5|yolov7] [max_frames]\n", argv[0]);
+            return -1;
+        }
+        RoiRect roi;
+        roi.x = atoi(argv[4]); roi.y = atoi(argv[5]);
+        roi.w = atoi(argv[6]); roi.h = atoi(argv[7]);
+        int stay = (argc > 8) ? atoi(argv[8]) : 3;
+        bool v7 = (argc < 10 || strcmp(argv[9], "yolov7") == 0);
+        int maxf = (argc > 10) ? atoi(argv[10]) : 300;
+        return run_camera(argv[1], roi, stay, v7, maxf);
+    }
+
     // ---- 模式1：单图（D4）----
     if (argc < 5) {
         printf("用法: %s <model.rknn> <input.rgb> <w> <h> [yolov5|yolov7] [out.ppm]\n", argv[0]);
         printf("      或 %s <model.rknn> video <dir> <roi_x> <roi_y> <roi_w> <roi_h> [stay_sec] [yolov5|yolov7]\n", argv[0]);
+        printf("      或 %s <model.rknn> cam <roi_x> <roi_y> <roi_w> <roi_h> [stay_sec] [yolov5|yolov7] [max_frames]\n", argv[0]);
         return -1;
     }
     const char* model_path = argv[1];
