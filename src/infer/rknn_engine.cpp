@@ -210,11 +210,11 @@ bool RknnEngine::infer(const FramePtr& in, std::vector<DetObject>& outs) {
 
     rknn_output outputs[3];
     memset(outputs, 0, sizeof(outputs));
-    for (int i = 0; i < 3; ++i) {
-        bool quant = (out_attr_[i].type == RKNN_TENSOR_INT8 ||
-                      out_attr_[i].type == RKNN_TENSOR_UINT8);
-        outputs[i].want_float = quant ? 0 : 1;      // 量化模型拿原始 int8
-    }
+    // 先统一取 float 输出(want_float=1)：与板上 python(rknnlite) 验证路径一致，
+    // 可避免量化输出走 NPU OutputOperator 的 size_with_stride 提交失败问题。
+    // 后续要 int8 高性能可改用 rknn_create_memory(size_with_stride) 零拷贝。
+    for (int i = 0; i < 3; ++i)
+        outputs[i].want_float = 1;
     if (rknn_outputs_get(ctx_, 3, outputs, nullptr) < 0) { printf("[rknn] outputs_get fail\n"); return false; }
 
     // ---- 3) 三尺度解码 -> NMS -> letterbox 逆映射 -> 白名单 ----
@@ -224,15 +224,9 @@ bool RknnEngine::infer(const FramePtr& in, std::vector<DetObject>& outs) {
         int gh = in_h_ / yp_.strides[s];
         int gw = in_w_ / yp_.strides[s];
         const int* anchors = yp_.anchors[s];
-        if (out_attr_[s].type == RKNN_TENSOR_INT8)
-            decode_one_scale((const int8_t*) outputs[s].buf, gh, gw, yp_.strides[s],
-                             anchors, yp_.num_cls, out_attr_[s], yp_.conf_thresh, boxes, scores, clss);
-        else if (out_attr_[s].type == RKNN_TENSOR_UINT8)
-            decode_one_scale((const uint8_t*) outputs[s].buf, gh, gw, yp_.strides[s],
-                             anchors, yp_.num_cls, out_attr_[s], yp_.conf_thresh, boxes, scores, clss);
-        else
-            decode_one_scale((const float*) outputs[s].buf, gh, gw, yp_.strides[s],
-                             anchors, yp_.num_cls, out_attr_[s], yp_.conf_thresh, boxes, scores, clss);
+        // want_float=1 → 输出已是 float32，统一走 fp 解码（与官方 process_fp / python 一致）
+        decode_one_scale((const float*) outputs[s].buf, gh, gw, yp_.strides[s],
+                         anchors, yp_.num_cls, out_attr_[s], yp_.conf_thresh, boxes, scores, clss);
     }
     rknn_outputs_release(ctx_, 3, outputs);
 
