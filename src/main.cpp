@@ -58,6 +58,29 @@ static const char* ev_name(EventType t) {
     return "?";
 }
 
+// 画黄色 ROI 框并保存一帧预览(定位警戒区用)
+static void draw_roi_and_save(const std::string& path, const FramePtr& f,
+                              const RoiRect& roi) {
+    std::vector<uint8_t> img = f->data;
+    int w = int(f->width), h = int(f->height);
+    const int t = 3;
+    auto put = [&](int yy, int xx) {
+        if (yy < 0 || yy >= h || xx < 0 || xx >= w) return;
+        size_t p = (size_t(yy) * w + xx) * 3;
+        img[p] = 0; img[p + 1] = 255; img[p + 2] = 255;   // 黄
+    };
+    for (int k = 0; k < t; ++k) {
+        for (int x = roi.x - k; x <= roi.x + roi.w + k; ++x) { put(roi.y - k, x); put(roi.y + roi.h + k, x); }
+        for (int y = roi.y - k; y <= roi.y + roi.h + k; ++y) { put(y, roi.x - k); put(y, roi.x + roi.w + k); }
+    }
+    FILE* fp = fopen(path.c_str(), "wb");
+    if (!fp) return;
+    fprintf(fp, "P6\n%d %d\n255\n", w, h);
+    fwrite(img.data(), 1, img.size(), fp);
+    fclose(fp);
+    printf("[pipe] ROI 预览已存 %s (黄框=警戒区, 画面 %dx%d)\n", path.c_str(), w, h);
+}
+
 // 生成 YoloParams（yolov5 / yolov7 共用结构，仅 anchors 不同）
 static YoloParams make_params(bool use_v7) {
     YoloParams p;
@@ -205,6 +228,11 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
     if (!cam.open("/dev/video0", 1280, 720)) return -1;
     if (!cam.start()) return -1;
     mkdir("shots", 0755);
+
+    {   // 启动先抓一帧存 ROI 预览，便于定位警戒区
+        FramePtr pv;
+        if (cam.getFrame(pv, 1000)) draw_roi_and_save("shots/roi_preview.ppm", pv, roi);
+    }
 
     Reporter rep;
     rep.init(report_ip && report_ip[0], report_ip ? report_ip : "", report_port);
