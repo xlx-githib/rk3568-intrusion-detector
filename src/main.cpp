@@ -3,16 +3,20 @@
 // 模式2(视频帧序列): rk3568_intrusion <model.rknn> video <dir> <roi_x> <roi_y> <roi_w> <roi_h> [stay_sec] [yolov5|yolov7]
 //   dir 含 meta.txt(4行: w h fps frames) 与 f_0000.rgb...；帧源由 tools/board/video_to_frames.py 生成
 #include <sys/stat.h>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
+#include "common/block_queue.hpp"
 #include "infer/rknn_engine.hpp"
 #include "business/roi_monitor.hpp"
 #include "capture/v4l2_camera.hpp"
@@ -177,6 +181,108 @@ static int run_camera(const char* model, const RoiRect& roi, int stay_sec,
     return 0;
 }
 
+// ---- M2-3：四线程流水线的中间数据类型 ----
+struct InferOut {                        // 推理线程 → 业务线程
+    FramePtr frame;
+    std::vector<DetObject> dets;
+};
+struct EventMsg {                        // 业务线程 → 输出线程
+    Event ev;
+    FramePtr frame;
+    std::vector<DetObject> dets;
+};
+
+// ============ 模式4：四线程流水线（Capture→Infer→Business→Output）============
+static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
+                    bool use_v7, int max_frames) {
+    RknnEngine eng;
+    if (!eng.init(model, make_params(use_v7), {0, 2})) return -1;
+    RoiMonitor mon;
+    mon.configure(roi, stay_sec, {0, 2});
+    V4l2Camera cam;
+    if (!cam.open("/dev/video0", 1280, 720)) return -1;
+    if (!cam.start()) return -1;
+    mkdir("shots", 0755);
+    printf("[pipe] 四线程流水线 /dev/video0 ROI=(%d,%d,%d,%d) stay=%ds max=%d帧\n",
+           roi.x, roi.y, roi.w, roi.h, stay_sec, max_frames);
+
+    BlockQueue<FramePtr> rawQ(2);                       // Capture→Infer
+    BlockQueue<std::shared_ptr<InferOut>> resQ(2);      // Infer→Business
+    BlockQueue<std::shared_ptr<EventMsg>> evQ(16);      // Business→Output
+    std::atomic<int> nInfer{0}, nEvent{0}, nAlarm{0};
+    auto t0 = std::chrono::steady_clock::now();
+
+    std::thread capT([&] {                              // Capture 线程
+        int got = 0;
+        while (max_frames <= 0 || got < max_frames) {
+            FramePtr f;
+            if (!cam.getFrame(f, 1000)) continue;
+            got++;
+            rawQ.push(f);
+        }
+        rawQ.push(nullptr);                             // EOF 标记
+    });
+
+    std::thread infT([&] {                              // Infer 线程
+        while (true) {
+            FramePtr f;
+            if (!rawQ.pop(f, 200)) continue;
+            if (!f) { resQ.push(nullptr); break; }      // 收到 EOF
+            auto io = std::make_shared<InferOut>();
+            io->frame = f;
+            eng.infer(f, io->dets);
+            nInfer++;
+            resQ.push(io);
+        }
+    });
+
+    std::thread bizT([&] {                              // Business 线程
+        while (true) {
+            std::shared_ptr<InferOut> io;
+            if (!resQ.pop(io, 200)) continue;
+            if (!io) { evQ.push(nullptr); break; }
+            auto evs = mon.feed(io->dets, io->frame->pts_us);
+            for (const auto& e : evs) {
+                auto em = std::make_shared<EventMsg>();
+                em->ev = e; em->frame = io->frame; em->dets = io->dets;
+                evQ.push(em);
+            }
+        }
+    });
+
+    std::thread outT([&] {                              // Output 线程
+        while (true) {
+            std::shared_ptr<EventMsg> em;
+            if (!evQ.pop(em, 200)) continue;
+            if (!em) break;
+            if (em->ev.type == EventType::ALARM) {
+                nAlarm++;
+                char shot[256];
+                snprintf(shot, sizeof(shot), "shots/pipe_alarm_%06u.ppm",
+                         unsigned(em->frame->pts_us % 1000000));
+                draw_boxes_and_write_ppm(shot, em->frame->data,
+                                         int(em->frame->width), int(em->frame->height), em->dets);
+                printf("[pipe] ALARM -> %s (stay=%llu ms)\n", shot,
+                       (unsigned long long)em->ev.stay_ms);
+            } else {
+                printf("[pipe] EVENT %-7s stay=%llu ms\n", ev_name(em->ev.type),
+                       (unsigned long long)em->ev.stay_ms);
+            }
+            nEvent++;
+        }
+    });
+
+    capT.join(); infT.join(); bizT.join(); outT.join();
+    auto t1 = std::chrono::steady_clock::now();
+    double dt = std::chrono::duration<double>(t1 - t0).count();
+    printf("[pipe] 结束: infer %d 帧 / %.1f s = %.1f fps, 事件 %d(告警 %d)\n",
+           nInfer.load(), dt, dt > 0 ? nInfer.load() / dt : 0,
+           nEvent.load(), nAlarm.load());
+    eng.release();
+    cam.close();
+    return 0;
+}
+
 int main(int argc, char** argv) {
     // ---- 模式2：视频帧序列 ----
     if (argc >= 3 && strcmp(argv[2], "video") == 0) {
@@ -206,6 +312,21 @@ int main(int argc, char** argv) {
         bool v7 = (argc < 9 || strcmp(argv[8], "yolov7") == 0);
         int maxf = (argc > 9) ? atoi(argv[9]) : 300;
         return run_camera(argv[1], roi, stay, v7, maxf);
+    }
+
+    // ---- 模式4：四线程流水线 ----
+    if (argc >= 3 && strcmp(argv[2], "pipe") == 0) {
+        if (argc < 7) {
+            printf("用法: %s <model> pipe <roi_x> <roi_y> <roi_w> <roi_h> [stay_sec] [yolov5|yolov7] [max_frames]\n", argv[0]);
+            return -1;
+        }
+        RoiRect roi;
+        roi.x = atoi(argv[3]); roi.y = atoi(argv[4]);
+        roi.w = atoi(argv[5]); roi.h = atoi(argv[6]);
+        int stay = (argc > 7) ? atoi(argv[7]) : 3;
+        bool v7 = (argc < 9 || strcmp(argv[8], "yolov7") == 0);
+        int maxf = (argc > 9) ? atoi(argv[9]) : 300;
+        return run_pipe(argv[1], roi, stay, v7, maxf);
     }
 
     // ---- 模式1：单图（D4）----
