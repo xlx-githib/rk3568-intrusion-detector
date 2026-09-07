@@ -27,8 +27,11 @@ struct Event {
 
 class RoiMonitor {
 public:
+    // leave_confirm_frames：离开去抖阈值——连续 N 帧“检测不到目标”才算真正离开，
+    // 期间目标短暂丢失(边缘抖动/被遮挡 1~2 帧)不误发 LEAVE/RESOLVE。默认 5(≈0.3s@16fps)。
     void configure(const RoiRect& roi, int stay_alarm_sec,
-                   const std::vector<int>& watch_cls);
+                   const std::vector<int>& watch_cls,
+                   int leave_confirm_frames = 5);
 
     // 喂入一帧检测结果(带帧时刻)，产出事件列表
     std::vector<Event> feed(const std::vector<DetObject>& dets, uint64_t now_us);
@@ -42,4 +45,6 @@ private:
     uint64_t ts_start_us_ = 0;     // 进入时刻(us)
     int cur_cls_ = -1;             // 当前事件触发的类别(person=0/car=2)
     std::vector<int> watch_cls_;   // 关注类别
+    int leave_confirm_ = 5;        // 离开去抖帧数阈值
+    int leave_cnt_ = 0;            // 当前“连续缺席”帧数
 };

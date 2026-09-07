@@ -6,13 +6,16 @@
 #include "business/roi_monitor.hpp"
 
 void RoiMonitor::configure(const RoiRect& roi, int stay_alarm_sec,
-                           const std::vector<int>& watch_cls) {
+                           const std::vector<int>& watch_cls,
+                           int leave_confirm_frames) {
     roi_        = roi;
     stay_us_    = uint64_t(stay_alarm_sec) * 1000000ULL;
     watch_cls_  = watch_cls;
     st_         = State::IDLE;
     ts_start_us_ = 0;
     cur_cls_    = -1;
+    leave_confirm_ = leave_confirm_frames > 0 ? leave_confirm_frames : 1;
+    leave_cnt_  = 0;
 }
 
 std::vector<Event> RoiMonitor::feed(const std::vector<DetObject>& dets,
@@ -30,6 +33,7 @@ std::vector<Event> RoiMonitor::feed(const std::vector<DetObject>& dets,
     }
 
     if (inside) {
+        leave_cnt_ = 0;                          // 抖动回来：复位缺席计数，本次停留继续
         switch (st_) {
         case State::IDLE: {                       // 首次进入
             st_ = State::INSIDE;
@@ -55,24 +59,30 @@ std::vector<Event> RoiMonitor::feed(const std::vector<DetObject>& dets,
         }
     } else {
         switch (st_) {
-        case State::INSIDE: {                     // 未超时就离开 → 记录离开
-            Event e; e.type = EventType::LEAVE; e.cls_id = cur_cls_;
+        case State::IDLE:                         // 本来就没目标，无事件
+            break;
+        default: {                                // INSIDE/ALARMED：离开去抖
+            // 连续缺席不足 leave_confirm_ 帧 → 视为抖动(目标短暂丢失/边缘抖动)，
+            // 状态保持不迁移、不发事件；缺席期间也不做停留超时判定(避免人已走却误告警)。
+            if (++leave_cnt_ < leave_confirm_) break;
+
+            // 连续确认缺席 → 真正离开
+            Event e;
             e.ts_start_us = ts_start_us_;
             e.stay_ms = (now_us - ts_start_us_) / 1000ULL;
+            e.cls_id = cur_cls_;
+            if (st_ == State::ALARMED)
+                e.type = EventType::RESOLVE;      // 告警后离开 → 解除告警
+            else
+                e.type = EventType::LEAVE;        // 未超时就离开 → 记录离开
             evs.push_back(e);
+
             st_ = State::IDLE;
+            ts_start_us_ = 0;
+            cur_cls_ = -1;
+            leave_cnt_ = 0;
             break;
         }
-        case State::ALARMED: {                    // 告警后离开 → 解除告警
-            Event e; e.type = EventType::RESOLVE; e.cls_id = cur_cls_;
-            e.ts_start_us = ts_start_us_;
-            e.stay_ms = (now_us - ts_start_us_) / 1000ULL;
-            evs.push_back(e);
-            st_ = State::IDLE;
-            break;
-        }
-        default:
-            break;                                // IDLE：本来就没目标，无事件
         }
     }
     return evs;

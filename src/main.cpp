@@ -1,6 +1,6 @@
-// 程序入口（D5 / M1 闭环雏形）
+// 程序入口（D5 / M1 闭环雏形 / M2 实时流水线）
 // 模式1(单图): rk3568_intrusion <model.rknn> <input.rgb> <w> <h> [yolov5|yolov7] [out.ppm]
-// 模式2(视频帧序列): rk3568_intrusion <model.rknn> video <dir> <roi_x> <roi_y> <roi_w> <roi_h> [stay_sec] [yolov5|yolov7]
+// 模式2(视频帧序列): rk3568_intrusion <model.rknn> video <dir> <roi_x> <roi_y> <roi_w> <roi_h> [stay_sec] [yolov5|yolov7] [leave_confirm]
 //   dir 含 meta.txt(4行: w h fps frames) 与 f_0000.rgb...；帧源由 tools/board/video_to_frames.py 生成
 #include <sys/stat.h>
 #include <atomic>
@@ -96,7 +96,7 @@ static YoloParams make_params(bool use_v7) {
 
 // ============ 模式2：视频帧序列 → 逐帧 DetObject → ROI 状态机 → 告警截图 ============
 static int run_video(const char* model, const char* dir, const RoiRect& roi,
-                     int stay_sec, bool use_v7) {
+                     int stay_sec, bool use_v7, int leave_confirm) {
     // 读 meta.txt: 第1行 w, 第2行 h, 第3行 fps, 第4行 frames
     int w = 0, h = 0, fps = 10, frames = 0;
     {
@@ -110,8 +110,9 @@ static int run_video(const char* model, const char* dir, const RoiRect& roi,
     RknnEngine eng;
     if (!eng.init(model, make_params(use_v7), {0, 2})) return -1;
     RoiMonitor mon;
-    mon.configure(roi, stay_sec, {0, 2});
-    printf("[main] ROI=(%d,%d,%d,%d) stay=%ds\n", roi.x, roi.y, roi.w, roi.h, stay_sec);
+    mon.configure(roi, stay_sec, {0, 2}, leave_confirm);
+    printf("[main] ROI=(%d,%d,%d,%d) stay=%ds 离开去抖=%d帧\n",
+           roi.x, roi.y, roi.w, roi.h, stay_sec, leave_confirm);
     mkdir("shots", 0755);
 
     int ev_count = 0, alarm_count = 0;
@@ -159,18 +160,18 @@ static int run_video(const char* model, const char* dir, const RoiRect& roi,
 
 // ============ 模式3：真摄像头实时（M2：V4L2 采集 → 推理 → ROI → 告警，单线程先行）============
 static int run_camera(const char* model, const RoiRect& roi, int stay_sec,
-                      bool use_v7, int max_frames) {
+                      bool use_v7, int max_frames, int leave_confirm) {
     RknnEngine eng;
     if (!eng.init(model, make_params(use_v7), {0, 2})) return -1;
     RoiMonitor mon;
-    mon.configure(roi, stay_sec, {0, 2});
+    mon.configure(roi, stay_sec, {0, 2}, leave_confirm);
 
     V4l2Camera cam;
     if (!cam.open("/dev/video0", 1280, 720)) return -1;
     if (!cam.start()) return -1;
     mkdir("shots", 0755);
-    printf("[cam] /dev/video0 1280x720 ROI=(%d,%d,%d,%d) stay=%ds max=%d帧\n",
-           roi.x, roi.y, roi.w, roi.h, stay_sec, max_frames);
+    printf("[cam] /dev/video0 1280x720 ROI=(%d,%d,%d,%d) stay=%ds 离开去抖=%d帧 max=%d帧\n",
+           roi.x, roi.y, roi.w, roi.h, stay_sec, leave_confirm, max_frames);
 
     int got = 0, ev_count = 0, alarm_count = 0;
     auto t0 = std::chrono::steady_clock::now();
@@ -219,11 +220,11 @@ struct EventMsg {                        // 业务线程 → 输出线程
 // ============ 模式4：四线程流水线（Capture→Infer→Business→Output→上报）============
 static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
                     bool use_v7, int max_frames,
-                    const char* report_ip, int report_port) {
+                    const char* report_ip, int report_port, int leave_confirm) {
     RknnEngine eng;
     if (!eng.init(model, make_params(use_v7), {0, 2})) return -1;
     RoiMonitor mon;
-    mon.configure(roi, stay_sec, {0, 2});
+    mon.configure(roi, stay_sec, {0, 2}, leave_confirm);
     V4l2Camera cam;
     if (!cam.open("/dev/video0", 1280, 720)) return -1;
     if (!cam.start()) return -1;
@@ -326,7 +327,7 @@ int main(int argc, char** argv) {
     // ---- 模式2：视频帧序列 ----
     if (argc >= 3 && strcmp(argv[2], "video") == 0) {
         if (argc < 8) {
-            printf("用法: %s <model.rknn> video <dir> <roi_x> <roi_y> <roi_w> <roi_h> [stay_sec] [yolov5|yolov7]\n", argv[0]);
+            printf("用法: %s <model.rknn> video <dir> <roi_x> <roi_y> <roi_w> <roi_h> [stay_sec] [yolov5|yolov7] [leave_confirm]\n", argv[0]);
             return -1;
         }
         RoiRect roi;
@@ -334,29 +335,31 @@ int main(int argc, char** argv) {
         roi.w = atoi(argv[6]); roi.h = atoi(argv[7]);
         int stay = (argc > 8) ? atoi(argv[8]) : 3;
         bool v7 = (argc < 10 || strcmp(argv[9], "yolov7") == 0);
-        return run_video(argv[1], argv[3], roi, stay, v7);
+        int lc = (argc > 10) ? atoi(argv[10]) : 5;   // 离开去抖帧数(连续缺席 N 帧才算离开)
+        return run_video(argv[1], argv[3], roi, stay, v7, lc);
     }
 
     // ---- 模式3：真摄像头实时 ----
     if (argc >= 3 && strcmp(argv[2], "cam") == 0) {
         if (argc < 7) {
-            printf("用法: %s <model> cam <roi_x> <roi_y> <roi_w> <roi_h> [stay_sec] [yolov5|yolov7] [max_frames]\n", argv[0]);
+            printf("用法: %s <model> cam <roi_x> <roi_y> <roi_w> <roi_h> [stay_sec] [yolov5|yolov7] [max_frames] [leave_confirm]\n", argv[0]);
             return -1;
         }
-        // argv[3..6]=roi, argv[7]=stay, argv[8]=yolov5/7, argv[9]=max(注意无 dir 参数)
+        // argv[3..6]=roi, argv[7]=stay, argv[8]=yolov5/7, argv[9]=max, argv[10]=leave_confirm(注意无 dir 参数)
         RoiRect roi;
         roi.x = atoi(argv[3]); roi.y = atoi(argv[4]);
         roi.w = atoi(argv[5]); roi.h = atoi(argv[6]);
         int stay = (argc > 7) ? atoi(argv[7]) : 3;
         bool v7 = (argc < 9 || strcmp(argv[8], "yolov7") == 0);
         int maxf = (argc > 9) ? atoi(argv[9]) : 300;
-        return run_camera(argv[1], roi, stay, v7, maxf);
+        int lc = (argc > 10) ? atoi(argv[10]) : 5;   // 离开去抖帧数
+        return run_camera(argv[1], roi, stay, v7, maxf, lc);
     }
 
     // ---- 模式4：四线程流水线 ----
     if (argc >= 3 && strcmp(argv[2], "pipe") == 0) {
         if (argc < 7) {
-            printf("用法: %s <model> pipe <roi_x> <roi_y> <roi_w> <roi_h> [stay_sec] [yolov5|yolov7] [max_frames] [report_ip report_port]\n", argv[0]);
+            printf("用法: %s <model> pipe <roi_x> <roi_y> <roi_w> <roi_h> [stay_sec] [yolov5|yolov7] [max_frames] [report_ip report_port] [leave_confirm]\n", argv[0]);
             return -1;
         }
         RoiRect roi;
@@ -367,7 +370,8 @@ int main(int argc, char** argv) {
         int maxf = (argc > 9) ? atoi(argv[9]) : 300;
         const char* rip = (argc > 10) ? argv[10] : "";
         int rport = (argc > 11) ? atoi(argv[11]) : 9000;
-        return run_pipe(argv[1], roi, stay, v7, maxf, rip, rport);
+        int lc = (argc > 12) ? atoi(argv[12]) : 5;   // 离开去抖帧数
+        return run_pipe(argv[1], roi, stay, v7, maxf, rip, rport, lc);
     }
 
     // ---- 模式1：单图（D4）----
