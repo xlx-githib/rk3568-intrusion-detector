@@ -34,7 +34,11 @@ public:
     std::vector<Event> feed(const std::vector<DetObject>& dets, uint64_t now_us);
 
 private:
-    // TODO(D4/D8)：实现状态机
-    // 简化约定：用"ROI 内是否有白名单检出(框底部中心在 ROI 内)"做帧级判定，
-    //           连续帧计时近似停留时长；中断(离开/连续丢帧)则重置。
+    enum class State { IDLE, INSIDE, ALARMED };
+
+    State st_ = State::IDLE;
+    RoiRect roi_;
+    uint64_t stay_us_ = 0;         // 触发告警所需停留时长(us)
+    uint64_t ts_start_us_ = 0;     // 进入时刻(us)
+    std::vector<int> watch_cls_;   // 关注类别
 };
