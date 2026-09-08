@@ -113,6 +113,11 @@ void ServerWin::onLine(const QString& raw) {
     QString type = jsonStr(raw, "type");
     if (type.isEmpty()) type = "INFO";
 
+    if (type == "PREVIEW") {           // 现场预览帧：只刷新画面，不进日志(防 0.5s/条刷屏)
+        showPreview(raw);
+        return;
+    }
+
     // 日志显示裁剪 base64 缩略图，避免整行 58KB 刷屏(画面见右侧)
     QString disp = raw;
     const QString imgKey = "\"img\":\"";
@@ -130,7 +135,6 @@ void ServerWin::onLine(const QString& raw) {
     else if (type == "ALARM")    { ++cAlarm_;  showSnap(raw); }
     else if (type == "LEAVE")    { ++cLeave_; }
     else if (type == "RESOLVE")  { ++cResolve_; }
-    else if (type == "PREVIEW")  { showPreview(raw); }   // 现场预览：不计数
     updateStats();
 }
 
