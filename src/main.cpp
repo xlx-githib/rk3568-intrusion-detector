@@ -78,7 +78,7 @@ static void draw_roi_and_save(const std::string& path, const FramePtr& f,
     fprintf(fp, "P6\n%d %d\n255\n", w, h);
     fwrite(img.data(), 1, img.size(), fp);
     fclose(fp);
-    printf("[pipe] ROI 预览已存 %s (黄框=警戒区, 画面 %dx%d)\n", path.c_str(), w, h);
+    printf("[main] ROI 预览已存 %s (黄框=警戒区, 画面 %dx%d)\n", path.c_str(), w, h);
 }
 
 // 生成 YoloParams（yolov5 / yolov7 共用结构，仅 anchors 不同）
@@ -128,6 +128,9 @@ static int run_video(const char* model, const char* dir, const RoiRect& roi,
         frame->width = w; frame->height = h;
         frame->fmt = PixelFormat::RGB888;
         frame->data = buf;
+
+        if (i == 0)   // 首帧画 ROI 黄框预览，便于定位警戒区(video 模式无摄像头,只能离线出图)
+            draw_roi_and_save("shots/roi_preview_video.ppm", frame, roi);
 
         std::vector<DetObject> dets;
         eng.infer(frame, dets);
