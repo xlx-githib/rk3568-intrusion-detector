@@ -22,9 +22,16 @@ static int jsonInt(const QString& s, const char* key, int dflt = 0) {
     const QString pat = "\"" + QString::fromLatin1(key) + "\":";
     int p = s.indexOf(pat);
     if (p < 0) return dflt;
-    bool ok = false;
-    int v = s.mid(p + pat.size(), 16).toInt(&ok);
-    return ok ? v : dflt;
+    // 逐字符解析数字(到第一个非数字止)，比 mid+toInt 稳健
+    int q = p + pat.size();
+    int v = 0;
+    bool any = false;
+    while (q < s.size() && s.at(q) >= '0' && s.at(q) <= '9') {
+        v = v * 10 + (s.at(q).unicode() - '0');
+        ++q;
+        any = true;
+    }
+    return any ? v : dflt;
 }
 
 QString ServerWin::colorFor(const QString& type) const {
