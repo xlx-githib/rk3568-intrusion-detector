@@ -2,11 +2,16 @@
 
 #include <QApplication>
 #include <QDateTime>
+#include <QDesktopServices>
+#include <QDir>
 #include <QHBoxLayout>
 #include <QImage>
+#include <QListWidget>
 #include <QPixmap>
+#include <QPushButton>
 #include <QScrollBar>
 #include <QStatusBar>
+#include <QUrl>
 #include <QVBoxLayout>
 
 // ---- 轻量 JSON 字段提取（协议字段均为基础类型，无需引入 JSON 库）----
@@ -66,9 +71,28 @@ ServerWin::ServerWin(quint16 port, QWidget* parent) : QMainWindow(parent) {
     connLabel_->setStyleSheet("color:#999;");
 
     auto* right = new QVBoxLayout;
-    right->addWidget(new QLabel("<b>最近告警画面</b>"));
+    right->addWidget(new QLabel("<b>现场画面 / 告警照片</b>"));
     right->addWidget(snapLabel_, 1);
+
+    auto* btnOpen = new QPushButton("打开告警照片文件夹(alarms)", this);
+    connect(btnOpen, &QPushButton::clicked, this, [] {
+        QDir().mkpath("alarms");
+        QDesktopServices::openUrl(QUrl::fromLocalFile(
+            QDir::current().absoluteFilePath("alarms")));
+    });
+
+    hist_ = new QListWidget(this);
+    hist_->setFixedHeight(120);
+    hist_->setToolTip("点击查看历史告警照片");
+    connect(hist_, &QListWidget::currentRowChanged, this, [this](int row) {
+        if (row >= 0 && row < alarmImgs_.size())
+            paintThumb(alarmImgs_[row], "#ff3333");
+    });
+
+    right->addWidget(new QLabel("<b>告警历史</b>"));
+    right->addWidget(hist_);
     right->addWidget(statLabel_);
+    right->addWidget(btnOpen);
     right->addWidget(connLabel_);
 
     auto* lay = new QHBoxLayout;
@@ -174,15 +198,30 @@ void ServerWin::paintThumb(const QImage& im, const QString& border) {
     snapLabel_->setStyleSheet("background:#000;border:3px solid " + border + ";");
 }
 
-// ALARM 消息：告警画面(红框高亮 + 状态栏提示)
+// ALARM 消息：告警画面(红框高亮 + 自动存档 + 记入历史列表)
 void ServerWin::showSnap(const QString& raw) {
     QImage im;
     if (!decodeThumb(raw, im)) return;
     lastSnap_ = im;
+
+    QDir().mkpath(alarmDir_);
+    QString ts = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss_zzz");
+    QString file = alarmDir_ + "/alarm_" + ts + ".png";
+    if (!im.save(file, "PNG"))                      // PNG 插件缺失时退 BMP
+        im.save(alarmDir_ + "/alarm_" + ts + ".bmp", "BMP");
+
+    alarmImgs_.push_back(im);
+    int cls = jsonInt(raw, "cls", -1);
+    hist_->addItem(QString("%1  [%2] 停留%3s · 已存图")
+                   .arg(QDateTime::currentDateTime().toString("HH:mm:ss"))
+                   .arg(cls == 0 ? "人" : (cls == 2 ? "车" : "类" + QString::number(cls)))
+                   .arg(jsonInt(raw, "stay_ms") / 1000.0, 0, 'f', 1));
+    hist_->setCurrentRow(alarmImgs_.size() - 1);    // 定位并显示最新
+
     paintThumb(im, "#ff3333");
-    statusBar()->showMessage(QString("⚠ 告警! 类别 %1 · 停留 %2 ms")
-                             .arg(jsonInt(raw, "cls", -1))
-                             .arg(jsonInt(raw, "stay_ms")), 6000);
+    statusBar()->showMessage(QString("⚠ 告警! %1 · 照片已存 %2")
+                             .arg(cls == 0 ? "人" : (cls == 2 ? "车" : "类" + QString::number(cls)))
+                             .arg(file), 6000);
 }
 
 // 周期性现场预览帧：持续刷新右侧画面(准实时视频观感，绿色边框=正常监视)

@@ -345,9 +345,9 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
                                          int(em->frame->width), int(em->frame->height), em->dets);
                 printf("[pipe] ALARM -> %s (stay=%llu ms)\n", shot,
                        (unsigned long long)em->ev.stay_ms);
-                // 缩略图(RGB)随事件上报，PC Qt 端实时显示告警画面
+                // 缩略图(RGB)随事件上报，PC Qt 端实时显示并自动存档
                 std::vector<uint8_t> thumb;
-                const int TW = 320, TH = 180;     // 1280x720 → 320x180
+                const int TW = 640, TH = 360;     // 1280x720 → 640x360(清晰，便于看清谁)
                 downscale_rgb(em->frame, TW, TH, thumb);
                 rep.reportImg(em->ev, shot, TW, TH, thumb);
             } else {

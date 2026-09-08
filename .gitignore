@@ -31,6 +31,7 @@ host/qt_gui/.qmake.stash
 host/qt_gui/*.pro.user
 host/qt_gui/release/
 host/qt_gui/debug/
+host/qt_gui/alarms/
 
 # ---- 板端临时抽帧/预览图(本机查看用，不入库) ----
 tools/board/*.rgb

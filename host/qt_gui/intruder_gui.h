@@ -4,11 +4,13 @@
 #include <QMainWindow>
 #include <QTextBrowser>
 #include <QLabel>
+#include <QListWidget>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QImage>
 #include <QHash>
 #include <QString>
+#include <QVector>
 
 // PC 端 Qt 接收上位机：监听板端事件 JSON → 分色事件日志 + 最近告警画面 + 统计
 // 协议对齐 src/output/reporter.cpp：每行一条 JSON，
@@ -33,15 +35,18 @@ private:
     QString colorFor(const QString& type) const;
 
     QTextBrowser* log_ = nullptr;          // 事件日志(分色)
-    QLabel*       snapLabel_ = nullptr;    // 最近告警画面
+    QLabel*       snapLabel_ = nullptr;    // 最近告警画面/选中历史画面
     QLabel*       statLabel_ = nullptr;    // 事件统计
     QLabel*       connLabel_ = nullptr;    // 连接状态
+    QListWidget*  hist_ = nullptr;         // 告警历史列表(时间/类别/停留)
 
     QTcpServer* server_ = nullptr;
     QHash<QTcpSocket*, QString> bufs_;   // 每连接独立半包缓冲(多连接不串扰)
 
     int cIntrude_ = 0, cAlarm_ = 0, cLeave_ = 0, cResolve_ = 0;
     QImage lastSnap_;
+    QVector<QImage> alarmImgs_;          // 与 hist_ 行号对应(历史告警大图)
+    QString alarmDir_ = "alarms";        // PC 端告警照片自动存档目录
 };
 
 #endif // INTRUDER_GUI_H
