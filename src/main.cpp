@@ -306,8 +306,9 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
             if (!resQ.pop(io, 200)) continue;
             if (!io) { evQ.push(nullptr); break; }
             uint64_t now = io->frame->pts_us;
-            // 周期性现场预览帧 → Qt 端持续刷新(准实时画面)，间隔约 0.5s
-            if (now >= lastPreviewUs + 500000ULL) {
+            // 周期性现场预览帧 → Qt 端持续刷新(准实时画面)
+            // 频率 1s/帧 + 160x90(约58KB)：弱 WiFi 也扛得住，避免 TCP 积压
+            if (now >= lastPreviewUs + 1000000ULL) {
                 lastPreviewUs = now;
                 auto pm = std::make_shared<EventMsg>();
                 pm->preview = true;
@@ -328,9 +329,9 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
             std::shared_ptr<EventMsg> em;
             if (!evQ.pop(em, 200)) continue;
             if (!em) break;
-            if (em->preview) {                          // 现场预览帧
+            if (em->preview) {                          // 现场预览帧(小图省带宽)
                 std::vector<uint8_t> thumb;
-                const int TW = 320, TH = 180;
+                const int TW = 160, TH = 90;
                 downscale_rgb(em->frame, TW, TH, thumb);
                 rep.reportPreview(TW, TH, thumb);
                 continue;                               // 非事件，不计数
