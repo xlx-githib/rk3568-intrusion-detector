@@ -7,6 +7,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QImage>
+#include <QHash>
 #include <QString>
 
 // PC 端 Qt 接收上位机：监听板端事件 JSON → 分色事件日志 + 最近告警画面 + 统计
@@ -37,7 +38,7 @@ private:
     QLabel*       connLabel_ = nullptr;    // 连接状态
 
     QTcpServer* server_ = nullptr;
-    QString     buf_;                      // 半包缓冲
+    QHash<QTcpSocket*, QString> bufs_;   // 每连接独立半包缓冲(多连接不串扰)
 
     int cIntrude_ = 0, cAlarm_ = 0, cLeave_ = 0, cResolve_ = 0;
     QImage lastSnap_;

@@ -87,7 +87,8 @@ void ServerWin::onNewConnection() {
     while (QTcpSocket* s = server_->nextPendingConnection()) {
         connect(s, &QTcpSocket::readyRead, this,
                 [this, s] { onReadyRead(s); });
-        connect(s, &QTcpSocket::disconnected, this, [this] {
+        connect(s, &QTcpSocket::disconnected, this, [this, s] {
+            bufs_.remove(s);               // 清理该连接缓冲
             connLabel_->setText("已断开");
             connLabel_->setStyleSheet("color:#ff7777;");
         });
@@ -100,11 +101,12 @@ void ServerWin::onNewConnection() {
 }
 
 void ServerWin::onReadyRead(QTcpSocket* s) {
-    buf_ += QString::fromUtf8(s->readAll());
+    QString& buf = bufs_[s];               // 每连接独立缓冲
+    buf += QString::fromUtf8(s->readAll());
     int idx;
-    while ((idx = buf_.indexOf('\n')) >= 0) {      // 按行解析(半包缓冲)
-        QString line = buf_.left(idx).trimmed();
-        buf_.remove(0, idx + 1);
+    while ((idx = buf.indexOf('\n')) >= 0) {     // 按行解析(半包缓冲)
+        QString line = buf.left(idx).trimmed();
+        buf.remove(0, idx + 1);
         if (!line.isEmpty()) onLine(line);
     }
 }
@@ -143,8 +145,9 @@ bool ServerWin::decodeThumb(const QString& raw, QImage& im) {
     int tw = jsonInt(raw, "thumb_w", 0), th = jsonInt(raw, "thumb_h", 0);
     QByteArray b = QByteArray::fromBase64(jsonStr(raw, "img").toLatin1());
     if (tw <= 0 || th <= 0) {
-        appendLog("<span style='color:#ff5555'>[img 解码失败] 尺寸异常 tw="
-                  + QString::number(tw) + " th=" + QString::number(th) + "</span>");
+        appendLog("<span style='color:#ff5555'>[img 解码失败] 尺寸 tw="
+                  + QString::number(tw) + " th=" + QString::number(th)
+                  + " | 行首: " + raw.left(180).toHtmlEscaped() + "</span>");
         return false;
     }
     if (b.size() < tw * th * 3) {
