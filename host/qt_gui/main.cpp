@@ -2,53 +2,163 @@
 
 #include <QApplication>
 #include <QDateTime>
+#include <QHBoxLayout>
+#include <QImage>
+#include <QPixmap>
+#include <QScrollBar>
 #include <QVBoxLayout>
+
+// ---- 轻量 JSON 字段提取（协议字段均为基础类型，无需引入 JSON 库）----
+static QString jsonStr(const QString& s, const char* key) {
+    const QString pat = "\"" + QString::fromLatin1(key) + "\":\"";
+    int p = s.indexOf(pat);
+    if (p < 0) return QString();
+    p += pat.size();
+    int e = s.indexOf('"', p);
+    return (e < 0) ? QString() : s.mid(p, e - p);
+}
+static int jsonInt(const QString& s, const char* key, int dflt = 0) {
+    const QString pat = "\"" + QString::fromLatin1(key) + "\":";
+    int p = s.indexOf(pat);
+    if (p < 0) return dflt;
+    bool ok = false;
+    int v = s.mid(p + pat.size(), 16).toInt(&ok);
+    return ok ? v : dflt;
+}
+
+QString ServerWin::colorFor(const QString& type) const {
+    if (type == "INTRUDE") return "#ffcc00";   // 黄：进入
+    if (type == "ALARM")   return "#ff5555";   // 红：告警
+    if (type == "LEAVE")   return "#9aa0a6";   // 灰：离开
+    if (type == "RESOLVE") return "#3ddc84";   // 绿：解除
+    if (type == "TEST")    return "#66ccff";
+    return "#e0e0e0";
+}
 
 ServerWin::ServerWin(quint16 port, QWidget* parent) : QMainWindow(parent) {
     setWindowTitle(QString("入侵告警接收端  监听 0.0.0.0:%1").arg(port));
-    resize(680, 480);
+    resize(1020, 620);
 
-    log_ = new QPlainTextEdit(this);
-    log_->setReadOnly(true);
-    setCentralWidget(log_);
+    log_ = new QTextBrowser(this);
+    log_->setOpenExternalLinks(false);
+    log_->setStyleSheet("QTextBrowser{background:#121212;color:#e0e0e0;"
+                        "border:1px solid #333;font-family:Consolas;font-size:12px;}");
+
+    snapLabel_ = new QLabel(this);
+    snapLabel_->setAlignment(Qt::AlignCenter);
+    snapLabel_->setFixedSize(560, 315);          // 16:9 固定显示区
+    snapLabel_->setText("暂无告警画面\n(摄像头触发 ALARM 后显示)");
+    snapLabel_->setStyleSheet("background:#111;color:#666;border:2px solid #444;");
+
+    statLabel_ = new QLabel(this);
+    statLabel_->setStyleSheet("font-weight:bold;font-size:13px;");
+    updateStats();
+
+    connLabel_ = new QLabel("未连接", this);
+    connLabel_->setStyleSheet("color:#999;");
+
+    auto* right = new QVBoxLayout;
+    right->addWidget(new QLabel("<b>最近告警画面</b>"));
+    right->addWidget(snapLabel_, 1);
+    right->addWidget(statLabel_);
+    right->addWidget(connLabel_);
+
+    auto* lay = new QHBoxLayout;
+    lay->addWidget(log_, 3);
+    lay->addLayout(right, 2);
+    auto* cw = new QWidget(this);
+    cw->setLayout(lay);
+    setCentralWidget(cw);
+
+    appendLog("<span style='color:#8ab4f8'>"
+              + QString("已监听 0.0.0.0:%1，等待板端上报 ...").arg(port)
+              + "</span>");
 
     server_ = new QTcpServer(this);
     connect(server_, &QTcpServer::newConnection,
             this, &ServerWin::onNewConnection);
-    if (!server_->listen(QHostAddress::Any, port)) {
-        append("监听失败: " + server_->errorString());
-    } else {
-        append(QString("已监听 0.0.0.0:%1，等待板端上报 ...").arg(port));
-    }
+    if (!server_->listen(QHostAddress::Any, port))
+        appendLog("<span style='color:#ff5555'>监听失败: "
+                  + server_->errorString() + "</span>");
 }
 
 void ServerWin::onNewConnection() {
     while (QTcpSocket* s = server_->nextPendingConnection()) {
         connect(s, &QTcpSocket::readyRead, this,
                 [this, s] { onReadyRead(s); });
+        connect(s, &QTcpSocket::disconnected, this, [this] {
+            connLabel_->setText("已断开");
+            connLabel_->setStyleSheet("color:#ff7777;");
+        });
         connect(s, &QTcpSocket::disconnected, s, &QTcpSocket::deleteLater);
-        append(QString("客户端接入: %1").arg(s->peerAddress().toString()));
+        connLabel_->setText("已连接: " + s->peerAddress().toString());
+        connLabel_->setStyleSheet("color:#3ddc84;font-weight:bold;");
+        appendLog("<span style='color:#9aa0a6'>客户端接入: "
+                  + s->peerAddress().toString() + "</span>");
     }
 }
 
 void ServerWin::onReadyRead(QTcpSocket* s) {
     buf_ += QString::fromUtf8(s->readAll());
     int idx;
-    while ((idx = buf_.indexOf('\n')) >= 0) {      // 按行解析
+    while ((idx = buf_.indexOf('\n')) >= 0) {      // 按行解析(半包缓冲)
         QString line = buf_.left(idx).trimmed();
         buf_.remove(0, idx + 1);
         if (!line.isEmpty()) onLine(line);
     }
 }
 
-void ServerWin::onLine(const QString& line) {
-    // 目前先原样显示 JSON；M3 扩展为事件列表/告警图/统计
-    append(QDateTime::currentDateTime().toString("HH:mm:ss.zzz") + "  " + line);
+void ServerWin::onLine(const QString& raw) {
+    QString type = jsonStr(raw, "type");
+    if (type.isEmpty()) type = "INFO";
+
+    // 日志显示裁剪 base64 缩略图，避免整行 58KB 刷屏(画面见右侧)
+    QString disp = raw;
+    const QString imgKey = "\"img\":\"";
+    int ip = disp.indexOf(imgKey);
+    if (ip >= 0) {
+        int ie = disp.indexOf('"', ip + imgKey.size());
+        if (ie > 0) disp = disp.left(ip + imgKey.size()) + "...\"}";
+    }
+
+    appendLog("<span style='color:" + colorFor(type) + "'>"
+              + QDateTime::currentDateTime().toString("HH:mm:ss.zzz") + "  "
+              + disp.toHtmlEscaped() + "</span>");
+
+    if (type == "INTRUDE")       { ++cIntrude_; }
+    else if (type == "ALARM")    { ++cAlarm_;  showSnap(raw); }
+    else if (type == "LEAVE")    { ++cLeave_; }
+    else if (type == "RESOLVE")  { ++cResolve_; }
+    updateStats();
 }
 
-void ServerWin::append(const QString& text) {
-    log_->appendPlainText(text);
-    log_->moveCursor(QTextCursor::End);
+// ALARM 消息中的缩略图(base64 RGB) → 显示到右侧画面区
+void ServerWin::showSnap(const QString& raw) {
+    int tw = jsonInt(raw, "thumb_w", 0), th = jsonInt(raw, "thumb_h", 0);
+    QByteArray b = QByteArray::fromBase64(jsonStr(raw, "img").toLatin1());
+    if (tw <= 0 || th <= 0 || b.size() < tw * th * 3) return;
+
+    QImage im((const uchar*)b.constData(), tw, th, QImage::Format_RGB888);
+    lastSnap_ = im.copy();                       // 深拷贝(脱离 QByteArray)
+    QPixmap pm = QPixmap::fromImage(lastSnap_);
+    snapLabel_->setPixmap(pm.scaled(snapLabel_->size(),
+                                    Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    snapLabel_->setStyleSheet("background:#000;border:3px solid #ff3333;");
+
+    statusBar()->showMessage(QString("⚠ 告警! 类别 %1 · 停留 %2 ms")
+                             .arg(jsonInt(raw, "cls", -1))
+                             .arg(jsonInt(raw, "stay_ms")), 6000);
+}
+
+void ServerWin::appendLog(const QString& html) {
+    log_->append(html);
+    log_->verticalScrollBar()->setValue(log_->verticalScrollBar()->maximum());
+}
+
+void ServerWin::updateStats() {
+    if (!statLabel_) return;
+    statLabel_->setText(QString("进入 %1   告警 %2   离开 %3   解除 %4")
+                        .arg(cIntrude_).arg(cAlarm_).arg(cLeave_).arg(cResolve_));
 }
 
 int main(int argc, char** argv) {

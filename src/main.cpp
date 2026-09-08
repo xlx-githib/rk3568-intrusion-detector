@@ -81,6 +81,28 @@ static void draw_roi_and_save(const std::string& path, const FramePtr& f,
     printf("[main] ROI 预览已存 %s (黄框=警戒区, 画面 %dx%d)\n", path.c_str(), w, h);
 }
 
+// 生成缩略图(RGB888, 最近邻降采样)：告警帧 → 随事件上报 PC Qt 端显示
+static void downscale_rgb(const FramePtr& f, int tw, int th,
+                          std::vector<uint8_t>& out) {
+    int w = int(f->width), h = int(f->height);
+    if (w <= 0 || h <= 0 || tw <= 0 || th <= 0) return;
+    out.assign(size_t(tw) * th * 3, 0);
+    size_t sx = size_t(w) / tw, sy = size_t(h) / th;   // 抽样步长(整数缩小)
+    if (sx < 1) sx = 1;
+    if (sy < 1) sy = 1;
+    for (int ty = 0; ty < th; ++ty) {
+        size_t src_y = size_t(ty) * sy;
+        if (src_y >= size_t(h)) src_y = size_t(h) - 1;
+        const uint8_t* row = f->data.data() + src_y * size_t(w) * 3;
+        uint8_t* dst = out.data() + size_t(ty) * tw * 3;
+        for (int tx = 0; tx < tw; ++tx) {
+            size_t src_x = size_t(tx) * sx;
+            if (src_x >= size_t(w)) src_x = size_t(w) - 1;
+            memcpy(dst + tx * 3, row + src_x * 3, 3);
+        }
+    }
+}
+
 // 生成 YoloParams（yolov5 / yolov7 共用结构，仅 anchors 不同）
 static YoloParams make_params(bool use_v7) {
     YoloParams p;
@@ -304,7 +326,11 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
                                          int(em->frame->width), int(em->frame->height), em->dets);
                 printf("[pipe] ALARM -> %s (stay=%llu ms)\n", shot,
                        (unsigned long long)em->ev.stay_ms);
-                rep.report(em->ev, shot);
+                // 缩略图(RGB)随事件上报，PC Qt 端实时显示告警画面
+                std::vector<uint8_t> thumb;
+                const int TW = 160, TH = 90;      // 1280x720 → 160x90
+                downscale_rgb(em->frame, TW, TH, thumb);
+                rep.reportImg(em->ev, shot, TW, TH, thumb);
             } else {
                 printf("[pipe] EVENT %-7s stay=%llu ms\n", ev_name(em->ev.type),
                        (unsigned long long)em->ev.stay_ms);

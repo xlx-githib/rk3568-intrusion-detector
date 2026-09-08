@@ -10,6 +10,25 @@
 
 #include "output/reporter.hpp"
 
+namespace {
+// 标准 Base64 编码（缩略图字节 → JSON 字段用）
+std::string b64encode(const uint8_t* d, size_t n) {
+    static const char T[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((n + 2) / 3) * 4);
+    for (size_t i = 0; i < n; i += 3) {
+        uint32_t v = uint32_t(d[i]) << 16;
+        if (i + 1 < n) v |= uint32_t(d[i + 1]) << 8;
+        if (i + 2 < n) v |= uint32_t(d[i + 2]);
+        out.push_back(T[(v >> 18) & 0x3f]);
+        out.push_back(T[(v >> 12) & 0x3f]);
+        out.push_back((i + 1 < n) ? T[(v >> 6) & 0x3f] : '=');
+        out.push_back((i + 2 < n) ? T[v & 0x3f] : '=');
+    }
+    return out;
+}
+}  // namespace
+
 void Reporter::init(bool enable_report, const std::string& server_ip, int port) {
     enabled_ = enable_report;
     ip_ = server_ip;
@@ -54,6 +73,22 @@ bool Reporter::try_send(const std::string& s) {
 
 bool Reporter::report(const Event& e, const char* snapshot) {
     if (!enabled_) return false;
+    std::string s;
+    if (!build_json(e, snapshot, 0, 0, nullptr, s)) return false;
+    return try_send(s);
+}
+
+bool Reporter::reportImg(const Event& e, const char* snapshot,
+                         int tw, int th, const std::vector<uint8_t>& rgb) {
+    if (!enabled_) return false;
+    std::string s;
+    if (!build_json(e, snapshot, tw, th, &rgb, s)) return false;
+    return try_send(s);
+}
+
+bool Reporter::build_json(const Event& e, const char* snapshot,
+                          int tw, int th, const std::vector<uint8_t>* rgb,
+                          std::string& out) {
     const char* type = "";
     switch (e.type) {
         case EventType::INTRUDE: type = "INTRUDE"; break;
@@ -61,13 +96,23 @@ bool Reporter::report(const Event& e, const char* snapshot) {
         case EventType::LEAVE:   type = "LEAVE";   break;
         case EventType::RESOLVE: type = "RESOLVE"; break;
     }
-    char buf[512];
-    int len = snprintf(buf, sizeof(buf),
-                       "{\"type\":\"%s\",\"cls\":%d,\"ts_start_ms\":%llu,\"stay_ms\":%llu,\"snapshot\":\"%s\"}\n",
+    char head[320];
+    int len = snprintf(head, sizeof(head),
+                       "{\"type\":\"%s\",\"cls\":%d,\"ts_start_ms\":%llu,\"stay_ms\":%llu,\"snapshot\":\"%s\"",
                        type, e.cls_id,
                        (unsigned long long)(e.ts_start_us / 1000ULL),
                        (unsigned long long)e.stay_ms,
                        snapshot ? snapshot : "");
-    if (len < 0 || size_t(len) >= sizeof(buf)) return false;
-    return try_send(std::string(buf, size_t(len)));
+    if (len < 0 || size_t(len) >= sizeof(head)) return false;
+    out.assign(head, size_t(len));
+    if (rgb && !rgb->empty() && tw > 0 && th > 0) {
+        char imghead[96];
+        int l2 = snprintf(imghead, sizeof(imghead), ",\"thumb_w\":%d,\"thumb_h\":%d,\"img\":\"",
+                          tw, th);
+        out.append(imghead, size_t(l2));
+        out += b64encode(rgb->data(), rgb->size());
+        out += "\"";
+    }
+    out += "}\n";
+    return true;
 }

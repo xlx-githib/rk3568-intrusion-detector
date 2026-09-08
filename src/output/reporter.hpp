@@ -1,7 +1,9 @@
 #pragma once
 // 输出层：事件 JSON over TCP 上报 PC（M2-4；截图仍由调用方用 draw_boxes 完成）
 // 协议：与 host/receiver.py 对齐 —— 每行一条 JSON
+#include <cstdint>
 #include <string>
+#include <vector>
 
 #include "business/roi_monitor.hpp"
 
@@ -12,9 +14,14 @@ public:
     void disconnect();
     // 组 JSON {type,cls,ts_start_ms,stay_ms,snapshot} 并发送；断线自动重连一次
     bool report(const Event& e, const char* snapshot = nullptr);
+    // ALARM 附带缩略图(RGB888 tw×th)：JSON 增 thumb_w/thumb_h/img(base64)，PC Qt 端可显示告警画面
+    bool reportImg(const Event& e, const char* snapshot,
+                   int tw, int th, const std::vector<uint8_t>& rgb);
 
 private:
     bool try_send(const std::string& s);
+    bool build_json(const Event& e, const char* snapshot,
+                    int tw, int th, const std::vector<uint8_t>* rgb, std::string& out);
 
     int fd_ = -1;
     bool enabled_ = false;
