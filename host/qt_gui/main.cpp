@@ -6,6 +6,7 @@
 #include <QImage>
 #include <QPixmap>
 #include <QScrollBar>
+#include <QStatusBar>
 #include <QVBoxLayout>
 
 // ---- 轻量 JSON 字段提取（协议字段均为基础类型，无需引入 JSON 库）----
@@ -129,25 +130,43 @@ void ServerWin::onLine(const QString& raw) {
     else if (type == "ALARM")    { ++cAlarm_;  showSnap(raw); }
     else if (type == "LEAVE")    { ++cLeave_; }
     else if (type == "RESOLVE")  { ++cResolve_; }
+    else if (type == "PREVIEW")  { showPreview(raw); }   // 现场预览：不计数
     updateStats();
 }
 
-// ALARM 消息中的缩略图(base64 RGB) → 显示到右侧画面区
-void ServerWin::showSnap(const QString& raw) {
+// 解码事件消息里的 base64 RGB 缩略图
+bool ServerWin::decodeThumb(const QString& raw, QImage& im) {
     int tw = jsonInt(raw, "thumb_w", 0), th = jsonInt(raw, "thumb_h", 0);
     QByteArray b = QByteArray::fromBase64(jsonStr(raw, "img").toLatin1());
-    if (tw <= 0 || th <= 0 || b.size() < tw * th * 3) return;
+    if (tw <= 0 || th <= 0 || b.size() < tw * th * 3) return false;
+    im = QImage((const uchar*)b.constData(), tw, th, QImage::Format_RGB888).copy();
+    return true;
+}
 
-    QImage im((const uchar*)b.constData(), tw, th, QImage::Format_RGB888);
-    lastSnap_ = im.copy();                       // 深拷贝(脱离 QByteArray)
-    QPixmap pm = QPixmap::fromImage(lastSnap_);
+void ServerWin::paintThumb(const QImage& im, const QString& border) {
+    QPixmap pm = QPixmap::fromImage(im);
     snapLabel_->setPixmap(pm.scaled(snapLabel_->size(),
                                     Qt::KeepAspectRatio, Qt::SmoothTransformation));
-    snapLabel_->setStyleSheet("background:#000;border:3px solid #ff3333;");
+    snapLabel_->setStyleSheet("background:#000;border:3px solid " + border + ";");
+}
 
+// ALARM 消息：告警画面(红框高亮 + 状态栏提示)
+void ServerWin::showSnap(const QString& raw) {
+    QImage im;
+    if (!decodeThumb(raw, im)) return;
+    lastSnap_ = im;
+    paintThumb(im, "#ff3333");
     statusBar()->showMessage(QString("⚠ 告警! 类别 %1 · 停留 %2 ms")
                              .arg(jsonInt(raw, "cls", -1))
                              .arg(jsonInt(raw, "stay_ms")), 6000);
+}
+
+// 周期性现场预览帧：持续刷新右侧画面(准实时视频观感，绿色边框=正常监视)
+void ServerWin::showPreview(const QString& raw) {
+    QImage im;
+    if (!decodeThumb(raw, im)) return;
+    lastSnap_ = im;
+    paintThumb(im, "#1f7a3d");
 }
 
 void ServerWin::appendLog(const QString& html) {

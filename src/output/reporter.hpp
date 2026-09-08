@@ -17,6 +17,8 @@ public:
     // ALARM 附带缩略图(RGB888 tw×th)：JSON 增 thumb_w/thumb_h/img(base64)，PC Qt 端可显示告警画面
     bool reportImg(const Event& e, const char* snapshot,
                    int tw, int th, const std::vector<uint8_t>& rgb);
+    // 周期性现场预览帧(准实时画面)：type=PREVIEW，Qt 端持续刷新显示
+    bool reportPreview(int tw, int th, const std::vector<uint8_t>& rgb);
 
 private:
     bool try_send(const std::string& s);

@@ -24,7 +24,10 @@ private slots:
 private:
     void onLine(const QString& raw);       // 解析一行 JSON
     void appendLog(const QString& html);   // 分色追加日志
-    void showSnap(const QString& raw);     // ALARM 缩略图显示到右侧
+    void showSnap(const QString& raw);     // ALARM 缩略图(红框+状态栏)
+    void showPreview(const QString& raw);  // 现场预览帧(持续刷新画面)
+    bool decodeThumb(const QString& raw, QImage& out);   // 解码 base64 RGB
+    void paintThumb(const QImage& im, const QString& border);
     void updateStats();
     QString colorFor(const QString& type) const;
 

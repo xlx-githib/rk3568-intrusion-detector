@@ -62,11 +62,15 @@ void Reporter::disconnect() {
 bool Reporter::try_send(const std::string& s) {
     if (fd_ < 0) connect();
     if (fd_ < 0) return false;
-    ssize_t n = send(fd_, s.data(), s.size(), MSG_NOSIGNAL);
-    if (n < 0) {                       // 断线：关闭，下次自动重连
-        printf("[rep] 发送失败，连接断开\n");
-        ::close(fd_); fd_ = -1;
-        return false;
+    size_t off = 0;
+    while (off < s.size()) {                 // 大消息(缩略图)可能需多次 send
+        ssize_t n = send(fd_, s.data() + off, s.size() - off, MSG_NOSIGNAL);
+        if (n < 0) {                         // 断线：关闭，下次自动重连
+            printf("[rep] 发送失败，连接断开\n");
+            ::close(fd_); fd_ = -1;
+            return false;
+        }
+        off += size_t(n);
     }
     return true;
 }
@@ -83,6 +87,19 @@ bool Reporter::reportImg(const Event& e, const char* snapshot,
     if (!enabled_) return false;
     std::string s;
     if (!build_json(e, snapshot, tw, th, &rgb, s)) return false;
+    return try_send(s);
+}
+
+bool Reporter::reportPreview(int tw, int th, const std::vector<uint8_t>& rgb) {
+    if (!enabled_ || rgb.empty() || tw <= 0 || th <= 0) return false;
+    std::string s;
+    char head[96];
+    int l = snprintf(head, sizeof(head), "{\"type\":\"PREVIEW\",\"thumb_w\":%d,\"thumb_h\":%d,\"img\":\"",
+                     tw, th);
+    if (l < 0 || size_t(l) >= sizeof(head)) return false;
+    s.assign(head, size_t(l));
+    s += b64encode(rgb.data(), rgb.size());
+    s += "\"}\n";
     return try_send(s);
 }
 

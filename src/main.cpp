@@ -240,6 +240,7 @@ struct EventMsg {                        // 业务线程 → 输出线程
     Event ev;
     FramePtr frame;
     std::vector<DetObject> dets;
+    bool preview = false;                // true=周期性现场预览帧(非事件，Qt 持续刷新画面)
 };
 
 // ============ 模式4：四线程流水线（Capture→Infer→Business→Output→上报）============
@@ -272,6 +273,7 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
     BlockQueue<std::shared_ptr<InferOut>> resQ(2);      // Infer→Business
     BlockQueue<std::shared_ptr<EventMsg>> evQ(16);      // Business→Output
     std::atomic<int> nInfer{0}, nEvent{0}, nAlarm{0};
+    uint64_t lastPreviewUs = 0;                         // 现场预览节流(biz 线程写)
     auto t0 = std::chrono::steady_clock::now();
 
     std::thread capT([&] {                              // Capture 线程
@@ -303,7 +305,16 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
             std::shared_ptr<InferOut> io;
             if (!resQ.pop(io, 200)) continue;
             if (!io) { evQ.push(nullptr); break; }
-            auto evs = mon.feed(io->dets, io->frame->pts_us);
+            uint64_t now = io->frame->pts_us;
+            // 周期性现场预览帧 → Qt 端持续刷新(准实时画面)，间隔约 0.5s
+            if (now >= lastPreviewUs + 500000ULL) {
+                lastPreviewUs = now;
+                auto pm = std::make_shared<EventMsg>();
+                pm->preview = true;
+                pm->frame = io->frame;
+                evQ.push(pm);
+            }
+            auto evs = mon.feed(io->dets, now);
             for (const auto& e : evs) {
                 auto em = std::make_shared<EventMsg>();
                 em->ev = e; em->frame = io->frame; em->dets = io->dets;
@@ -317,6 +328,13 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
             std::shared_ptr<EventMsg> em;
             if (!evQ.pop(em, 200)) continue;
             if (!em) break;
+            if (em->preview) {                          // 现场预览帧
+                std::vector<uint8_t> thumb;
+                const int TW = 320, TH = 180;
+                downscale_rgb(em->frame, TW, TH, thumb);
+                rep.reportPreview(TW, TH, thumb);
+                continue;                               // 非事件，不计数
+            }
             if (em->ev.type == EventType::ALARM) {
                 nAlarm++;
                 char shot[256];
@@ -328,7 +346,7 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
                        (unsigned long long)em->ev.stay_ms);
                 // 缩略图(RGB)随事件上报，PC Qt 端实时显示告警画面
                 std::vector<uint8_t> thumb;
-                const int TW = 160, TH = 90;      // 1280x720 → 160x90
+                const int TW = 320, TH = 180;     // 1280x720 → 320x180
                 downscale_rgb(em->frame, TW, TH, thumb);
                 rep.reportImg(em->ev, shot, TW, TH, thumb);
             } else {
