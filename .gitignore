@@ -24,3 +24,15 @@ models/*.onnx
 __pycache__/
 *.pyc
 host/.venv/
+
+# ---- Qt 构建产物 (host/qt_gui) ----
+host/qt_gui/Makefile*
+host/qt_gui/.qmake.stash
+host/qt_gui/*.pro.user
+host/qt_gui/release/
+host/qt_gui/debug/
+
+# ---- 板端临时抽帧/预览图(本机查看用，不入库) ----
+tools/board/*.rgb
+tools/board/*.ppm
+tools/board/*.png
