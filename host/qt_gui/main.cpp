@@ -142,7 +142,17 @@ void ServerWin::onLine(const QString& raw) {
 bool ServerWin::decodeThumb(const QString& raw, QImage& im) {
     int tw = jsonInt(raw, "thumb_w", 0), th = jsonInt(raw, "thumb_h", 0);
     QByteArray b = QByteArray::fromBase64(jsonStr(raw, "img").toLatin1());
-    if (tw <= 0 || th <= 0 || b.size() < tw * th * 3) return false;
+    if (tw <= 0 || th <= 0) {
+        appendLog("<span style='color:#ff5555'>[img 解码失败] 尺寸异常 tw="
+                  + QString::number(tw) + " th=" + QString::number(th) + "</span>");
+        return false;
+    }
+    if (b.size() < tw * th * 3) {
+        appendLog("<span style='color:#ff5555'>[img 解码失败] 数据不足 bsize="
+                  + QString::number(b.size()) + " 期望=" + QString::number(tw * th * 3)
+                  + "</span>");
+        return false;
+    }
     im = QImage((const uchar*)b.constData(), tw, th, QImage::Format_RGB888).copy();
     return true;
 }
