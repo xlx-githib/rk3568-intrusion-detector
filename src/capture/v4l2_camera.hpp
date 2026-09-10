@@ -5,10 +5,13 @@
 
 #include "common/frame.hpp"
 
+// 标准库名字逐个引入(头文件不用 using namespace std，避免污染包含者)
+using std::string;
+
 class V4l2Camera {
 public:
     // dev: /dev/video0；w/h: 采集分辨率（内部协商 NV12）
-    bool open(const std::string& dev, uint32_t w, uint32_t h);
+    bool open(const string& dev, uint32_t w, uint32_t h);
     void close();
     bool start();   // 入队所有缓冲并开始采集
     void stop();

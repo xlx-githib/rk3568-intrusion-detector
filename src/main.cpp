@@ -22,12 +22,15 @@
 #include "capture/v4l2_camera.hpp"
 #include "output/reporter.hpp"
 
+// 标准库名字统一引入(替代满屏 std:: 前缀)
+using namespace std;
+
 // 在 RGB 图上画红色矩形边框，写 PPM(P6)
-static void draw_boxes_and_write_ppm(const std::string& path,
-                                     const std::vector<uint8_t>& rgb,
+static void draw_boxes_and_write_ppm(const string& path,
+                                     const vector<uint8_t>& rgb,
                                      int w, int h,
-                                     const std::vector<DetObject>& objs) {
-    std::vector<uint8_t> img = rgb;
+                                     const vector<DetObject>& objs) {
+    vector<uint8_t> img = rgb;
     const int thick = 3;
     for (const auto& o : objs) {
         int x1 = int(o.x1), y1 = int(o.y1), x2 = int(o.x2), y2 = int(o.y2);
@@ -59,9 +62,9 @@ static const char* ev_name(EventType t) {
 }
 
 // 画黄色 ROI 框并保存一帧预览(定位警戒区用)
-static void draw_roi_and_save(const std::string& path, const FramePtr& f,
+static void draw_roi_and_save(const string& path, const FramePtr& f,
                               const RoiRect& roi) {
-    std::vector<uint8_t> img = f->data;
+    vector<uint8_t> img = f->data;
     int w = int(f->width), h = int(f->height);
     const int t = 3;
     auto put = [&](int yy, int xx) {
@@ -83,7 +86,7 @@ static void draw_roi_and_save(const std::string& path, const FramePtr& f,
 
 // 生成缩略图(RGB888, 最近邻降采样)：告警帧 → 随事件上报 PC Qt 端显示
 static void downscale_rgb(const FramePtr& f, int tw, int th,
-                          std::vector<uint8_t>& out) {
+                          vector<uint8_t>& out) {
     int w = int(f->width), h = int(f->height);
     if (w <= 0 || h <= 0 || tw <= 0 || th <= 0) return;
     out.assign(size_t(tw) * th * 3, 0);
@@ -122,7 +125,7 @@ static int run_video(const char* model, const char* dir, const RoiRect& roi,
     // 读 meta.txt: 第1行 w, 第2行 h, 第3行 fps, 第4行 frames
     int w = 0, h = 0, fps = 10, frames = 0;
     {
-        std::ifstream meta(std::string(dir) + "/meta.txt");
+        ifstream meta(string(dir) + "/meta.txt");
         if (!meta) { printf("[main] 没有 %s/meta.txt\n", dir); return -1; }
         meta >> w >> h >> fps >> frames;
         if (w <= 0 || h <= 0 || frames <= 0) { printf("[main] meta 非法\n"); return -1; }
@@ -138,15 +141,15 @@ static int run_video(const char* model, const char* dir, const RoiRect& roi,
     mkdir("shots", 0755);
 
     int ev_count = 0, alarm_count = 0;
-    std::vector<uint8_t> buf;
+    vector<uint8_t> buf;
     for (int i = 0; i < frames; ++i) {
         char path[256];
         snprintf(path, sizeof(path), "%s/f_%04d.rgb", dir, i);
-        std::ifstream f(path, std::ios::binary);
+        ifstream f(path, ios::binary);
         if (!f) { printf("[main] 读取 %s 失败，提前结束\n", path); break; }
-        buf.assign((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        buf.assign((istreambuf_iterator<char>(f)), istreambuf_iterator<char>());
 
-        FramePtr frame = std::make_shared<Frame>();
+        FramePtr frame = make_shared<Frame>();
         frame->width = w; frame->height = h;
         frame->fmt = PixelFormat::RGB888;
         frame->data = buf;
@@ -154,12 +157,12 @@ static int run_video(const char* model, const char* dir, const RoiRect& roi,
         if (i == 0)   // 首帧画 ROI 黄框预览，便于定位警戒区(video 模式无摄像头,只能离线出图)
             draw_roi_and_save("shots/roi_preview_video.ppm", frame, roi);
 
-        std::vector<DetObject> dets;
+        vector<DetObject> dets;
         eng.infer(frame, dets);
         uint64_t now_us = uint64_t(i) * 1000000ULL / uint64_t(fps);
 
         // 状态机
-        std::vector<Event> evs = mon.feed(dets, now_us);
+        vector<Event> evs = mon.feed(dets, now_us);
         if (!evs.empty()) {
             for (const auto& e : evs) {
                 ev_count++;
@@ -199,13 +202,13 @@ static int run_camera(const char* model, const RoiRect& roi, int stay_sec,
            roi.x, roi.y, roi.w, roi.h, stay_sec, leave_confirm, max_frames);
 
     int got = 0, ev_count = 0, alarm_count = 0;
-    auto t0 = std::chrono::steady_clock::now();
+    auto t0 = chrono::steady_clock::now();
     while (max_frames <= 0 || got < max_frames) {
         FramePtr f;
         if (!cam.getFrame(f, 1000)) { printf("[cam] 取帧超时\n"); continue; }
-        std::vector<DetObject> dets;
+        vector<DetObject> dets;
         eng.infer(f, dets);
-        std::vector<Event> evs = mon.feed(dets, f->pts_us);   // 用真实时间戳
+        vector<Event> evs = mon.feed(dets, f->pts_us);   // 用真实时间戳
         for (const auto& e : evs) {
             ev_count++;
             if (e.type == EventType::ALARM) {
@@ -222,8 +225,8 @@ static int run_camera(const char* model, const RoiRect& roi, int stay_sec,
         }
         if (++got % 10 == 0) printf("[cam] 已处理 %d 帧\n", got);
     }
-    auto t1 = std::chrono::steady_clock::now();
-    double dt = std::chrono::duration<double>(t1 - t0).count();
+    auto t1 = chrono::steady_clock::now();
+    double dt = chrono::duration<double>(t1 - t0).count();
     printf("[cam] 结束: %d 帧 / %.1f s = %.1f fps, 事件 %d(告警 %d)\n",
            got, dt, dt > 0 ? got / dt : 0, ev_count, alarm_count);
     eng.release();
@@ -234,12 +237,12 @@ static int run_camera(const char* model, const RoiRect& roi, int stay_sec,
 // ---- M2-3：四线程流水线的中间数据类型 ----
 struct InferOut {                        // 推理线程 → 业务线程
     FramePtr frame;
-    std::vector<DetObject> dets;
+    vector<DetObject> dets;
 };
 struct EventMsg {                        // 业务线程 → 输出线程
     Event ev;
     FramePtr frame;
-    std::vector<DetObject> dets;
+    vector<DetObject> dets;
     bool preview = false;                // true=周期性现场预览帧(非事件，Qt 持续刷新画面)
 };
 
@@ -270,13 +273,13 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
            (report_ip && report_ip[0]) ? report_ip : "(off)", report_port);
 
     BlockQueue<FramePtr> rawQ(2);                       // Capture→Infer
-    BlockQueue<std::shared_ptr<InferOut>> resQ(2);      // Infer→Business
-    BlockQueue<std::shared_ptr<EventMsg>> evQ(16);      // Business→Output
-    std::atomic<int> nInfer{0}, nEvent{0}, nAlarm{0};
+    BlockQueue<shared_ptr<InferOut>> resQ(2);      // Infer→Business
+    BlockQueue<shared_ptr<EventMsg>> evQ(16);      // Business→Output
+    atomic<int> nInfer{0}, nEvent{0}, nAlarm{0};
     uint64_t lastPreviewUs = 0;                         // 现场预览节流(biz 线程写)
-    auto t0 = std::chrono::steady_clock::now();
+    auto t0 = chrono::steady_clock::now();
 
-    std::thread capT([&] {                              // Capture 线程
+    thread capT([&] {                              // Capture 线程
         int got = 0;
         while (max_frames <= 0 || got < max_frames) {
             FramePtr f;
@@ -287,12 +290,12 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
         rawQ.push(nullptr);                             // EOF 标记
     });
 
-    std::thread infT([&] {                              // Infer 线程
+    thread infT([&] {                              // Infer 线程
         while (true) {
             FramePtr f;
             if (!rawQ.pop(f, 200)) continue;
             if (!f) { resQ.push(nullptr); break; }      // 收到 EOF
-            auto io = std::make_shared<InferOut>();
+            auto io = make_shared<InferOut>();
             io->frame = f;
             eng.infer(f, io->dets);
             nInfer++;
@@ -300,9 +303,9 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
         }
     });
 
-    std::thread bizT([&] {                              // Business 线程
+    thread bizT([&] {                              // Business 线程
         while (true) {
-            std::shared_ptr<InferOut> io;
+            shared_ptr<InferOut> io;
             if (!resQ.pop(io, 200)) continue;
             if (!io) { evQ.push(nullptr); break; }
             uint64_t now = io->frame->pts_us;
@@ -310,27 +313,27 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
             // ~3fps + 320x180(约230KB)：手机热点等快网流畅清晰；弱 WiFi 可改回 1s/160x90
             if (now >= lastPreviewUs + 333333ULL) {
                 lastPreviewUs = now;
-                auto pm = std::make_shared<EventMsg>();
+                auto pm = make_shared<EventMsg>();
                 pm->preview = true;
                 pm->frame = io->frame;
                 evQ.push(pm);
             }
             auto evs = mon.feed(io->dets, now);
             for (const auto& e : evs) {
-                auto em = std::make_shared<EventMsg>();
+                auto em = make_shared<EventMsg>();
                 em->ev = e; em->frame = io->frame; em->dets = io->dets;
                 evQ.push(em);
             }
         }
     });
 
-    std::thread outT([&] {                              // Output 线程
+    thread outT([&] {                              // Output 线程
         while (true) {
-            std::shared_ptr<EventMsg> em;
+            shared_ptr<EventMsg> em;
             if (!evQ.pop(em, 200)) continue;
             if (!em) break;
             if (em->preview) {                          // 现场预览帧
-                std::vector<uint8_t> thumb;
+                vector<uint8_t> thumb;
                 const int TW = 320, TH = 180;     // 清晰度优先(快网)
                 downscale_rgb(em->frame, TW, TH, thumb);
                 rep.reportPreview(TW, TH, thumb);
@@ -346,7 +349,7 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
                 printf("[pipe] ALARM -> %s (stay=%llu ms)\n", shot,
                        (unsigned long long)em->ev.stay_ms);
                 // 缩略图(RGB)随事件上报，PC Qt 端实时显示并自动存档
-                std::vector<uint8_t> thumb;
+                vector<uint8_t> thumb;
                 const int TW = 640, TH = 360;     // 1280x720 → 640x360(清晰，便于看清谁)
                 downscale_rgb(em->frame, TW, TH, thumb);
                 rep.reportImg(em->ev, shot, TW, TH, thumb);
@@ -361,8 +364,8 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
 
     capT.join(); infT.join(); bizT.join(); outT.join();
     rep.disconnect();
-    auto t1 = std::chrono::steady_clock::now();
-    double dt = std::chrono::duration<double>(t1 - t0).count();
+    auto t1 = chrono::steady_clock::now();
+    double dt = chrono::duration<double>(t1 - t0).count();
     printf("[pipe] 结束: infer %d 帧 / %.1f s = %.1f fps, 事件 %d(告警 %d)\n",
            nInfer.load(), dt, dt > 0 ? nInfer.load() / dt : 0,
            nEvent.load(), nAlarm.load());
@@ -436,10 +439,10 @@ int main(int argc, char** argv) {
     bool use_v7 = (argc < 6 || strcmp(argv[5], "yolov7") == 0);
     const char* ppm_path  = (argc > 6) ? argv[6] : "out.ppm";
 
-    std::ifstream f(rgb_path, std::ios::binary);
+    ifstream f(rgb_path, ios::binary);
     if (!f) { printf("[main] 打不开 %s\n", rgb_path); return -1; }
-    std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)),
-                              std::istreambuf_iterator<char>());
+    vector<uint8_t> data((istreambuf_iterator<char>(f)),
+                              istreambuf_iterator<char>());
     if (data.size() != size_t(w) * h * 3) {
         printf("[main] rgb 字节数不符: %zu != %dx%dx3\n", data.size(), w, h);
         return -1;
@@ -448,12 +451,12 @@ int main(int argc, char** argv) {
     RknnEngine eng;
     if (!eng.init(model_path, make_params(use_v7), {0, 2})) return -1;
 
-    FramePtr frame = std::make_shared<Frame>();
+    FramePtr frame = make_shared<Frame>();
     frame->width = w; frame->height = h;
     frame->fmt = PixelFormat::RGB888;
     frame->data.swap(data);
 
-    std::vector<DetObject> objs;
+    vector<DetObject> objs;
     if (!eng.infer(frame, objs)) { printf("[main] infer 失败\n"); return -1; }
 
     printf("==== 检测结果(白名单 person=0/car=2) ====\n");

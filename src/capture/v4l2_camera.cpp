@@ -11,6 +11,9 @@
 
 #include "capture/v4l2_camera.hpp"
 
+// 标准库名字统一引入(替代满屏 std:: 前缀)
+using namespace std;
+
 namespace {
 int xioctl(int fd, unsigned long req, void* arg) {
     int r;
@@ -23,7 +26,7 @@ uint64_t now_us() {
 }
 }  // namespace
 
-bool V4l2Camera::open(const std::string& dev, uint32_t w, uint32_t h) {
+bool V4l2Camera::open(const string& dev, uint32_t w, uint32_t h) {
     w_ = w; h_ = h;
     fd_ = ::open(dev.c_str(), O_RDWR);
     if (fd_ < 0) { printf("[v4l2] open %s 失败\n", dev.c_str()); return false; }
@@ -93,7 +96,7 @@ bool V4l2Camera::getFrame(FramePtr& out, int timeout_ms) {
     if (xioctl(fd_, VIDIOC_DQBUF, &buf) < 0) { perror("[v4l2] DQBUF"); return false; }
 
     // NV12(mmap) -> RGB888 Frame（拷贝，后续可换 RGA 减少拷贝）
-    FramePtr f = std::make_shared<Frame>();
+    FramePtr f = make_shared<Frame>();
     f->width = w_; f->height = h_;
     f->fmt = PixelFormat::RGB888;
     f->pts_us = now_us();

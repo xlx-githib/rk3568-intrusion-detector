@@ -9,6 +9,9 @@
 
 #include "infer/rknn_engine.hpp"
 
+// 标准库名字统一引入(替代满屏 std:: 前缀)
+using namespace std;
+
 namespace {
 
 // ---------- int8/uint8 反量化: f = (q - zp) * scale ----------
@@ -21,8 +24,8 @@ inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi 
 // IoU（与官方 CalculateOverlap 等价）
 float calc_iou(float x0, float y0, float x1, float y1,
                float x2, float y2, float x3, float y3) {
-    float iw = std::max(0.f, std::min(x1, x3) - std::max(x0, x2));
-    float ih = std::max(0.f, std::min(y1, y3) - std::max(y0, y2));
+    float iw = max(0.f, min(x1, x3) - max(x0, x2));
+    float ih = max(0.f, min(y1, y3) - max(y0, y2));
     float inter = iw * ih;
     float u = (x1 - x0) * (y1 - y0) + (x3 - x2) * (y3 - y2) - inter;
     return u <= 0.f ? 0.f : inter / u;
@@ -33,9 +36,9 @@ template <typename T>
 void decode_one_scale(const T* data, int grid_h, int grid_w, int stride,
                       const int* anchors, int num_cls,
                       const rknn_tensor_attr& attr, float conf_th,
-                      std::vector<float>& boxes,      // x,y,w,h 平铺
-                      std::vector<float>& scores,
-                      std::vector<int>& clss) {
+                      vector<float>& boxes,      // x,y,w,h 平铺
+                      vector<float>& scores,
+                      vector<int>& clss) {
     const int grid_len = grid_h * grid_w;
     const int box_size = 5 + num_cls;               // 85
     const int32_t zp   = attr.zp;
@@ -82,15 +85,15 @@ void decode_one_scale(const T* data, int grid_h, int grid_w, int stride,
 }
 
 // 按类别 NMS：删除与高置信框重叠过多的低分框
-void nms_per_class(std::vector<float>& boxes, std::vector<float>& scores,
-                   std::vector<int>& clss, std::vector<int>& keep,
+void nms_per_class(vector<float>& boxes, vector<float>& scores,
+                   vector<int>& clss, vector<int>& keep,
                    float nms_th) {
-    std::vector<int> order(scores.size());
+    vector<int> order(scores.size());
     for (size_t i = 0; i < order.size(); ++i) order[i] = int(i);
-    std::sort(order.begin(), order.end(),
+    sort(order.begin(), order.end(),
               [&](int a, int b) { return scores[a] > scores[b]; });
 
-    std::vector<char> removed(scores.size(), 0);
+    vector<char> removed(scores.size(), 0);
     for (size_t i = 0; i < order.size(); ++i) {
         int n = order[i];
         if (removed[n]) continue;
@@ -147,8 +150,8 @@ bool RknnEngine::load_model_and_query(const char* model_path) {
     return true;
 }
 
-bool RknnEngine::init(const std::string& model_path, const YoloParams& p,
-                      const std::vector<int>& watch_cls) {
+bool RknnEngine::init(const string& model_path, const YoloParams& p,
+                      const vector<int>& watch_cls) {
     yp_ = p;
     watch_cls_ = watch_cls;
     if (!load_model_and_query(model_path.c_str())) return false;
@@ -163,13 +166,13 @@ void RknnEngine::release() {
 }
 
 // ================= 一帧检测 =================
-bool RknnEngine::infer(const FramePtr& in, std::vector<DetObject>& outs) {
+bool RknnEngine::infer(const FramePtr& in, vector<DetObject>& outs) {
     outs.clear();
     if (!ok_ || !in || in->data.empty()) return false;
 
     // ---- 1) 转成 RGB(如输入是 BGR)，并 letterbox 到模型输入尺寸(无 OpenCV, 最近邻缩放) ----
     const uint32_t sw = in->width, sh = in->height;
-    std::vector<uint8_t> src;                       // RGB, HWC
+    vector<uint8_t> src;                       // RGB, HWC
     if (in->fmt == PixelFormat::RGB888) {
         src.assign(in->data.begin(), in->data.end());
     } else if (in->fmt == PixelFormat::BGR888) {
@@ -182,11 +185,11 @@ bool RknnEngine::infer(const FramePtr& in, std::vector<DetObject>& outs) {
     }
 
     const int dst = in_w_;                           // 640
-    float scale = std::min(float(dst) / sw, float(dst) / sh);
+    float scale = min(float(dst) / sw, float(dst) / sh);
     int nw = int(sw * scale), nh = int(sh * scale);
     int padx = (dst - nw) / 2, pady = (dst - nh) / 2;
 
-    std::vector<uint8_t> input(dst * dst * 3, 114);  // 灰边 114
+    vector<uint8_t> input(dst * dst * 3, 114);  // 灰边 114
     for (int y = 0; y < nh; ++y) {                   // 最近邻缩放(演示够用, 后续可换 RGA)
         int sy = int(y / scale);
         for (int x = 0; x < nw; ++x) {
@@ -218,8 +221,8 @@ bool RknnEngine::infer(const FramePtr& in, std::vector<DetObject>& outs) {
     if (rknn_outputs_get(ctx_, 3, outputs, nullptr) < 0) { printf("[rknn] outputs_get fail\n"); return false; }
 
     // ---- 3) 三尺度解码 -> NMS -> letterbox 逆映射 -> 白名单 ----
-    std::vector<float> boxes, scores;
-    std::vector<int>   clss;
+    vector<float> boxes, scores;
+    vector<int>   clss;
     for (int s = 0; s < 3; ++s) {
         int gh = in_h_ / yp_.strides[s];
         int gw = in_w_ / yp_.strides[s];
@@ -230,12 +233,12 @@ bool RknnEngine::infer(const FramePtr& in, std::vector<DetObject>& outs) {
     }
     rknn_outputs_release(ctx_, 3, outputs);
 
-    std::vector<int> keep;
+    vector<int> keep;
     nms_per_class(boxes, scores, clss, keep, yp_.nms_thresh);
 
     for (int idx : keep) {
         // 白名单过滤（可配置，如 {0,2}=person,car）
-        if (std::find(watch_cls_.begin(), watch_cls_.end(), clss[idx]) == watch_cls_.end())
+        if (find(watch_cls_.begin(), watch_cls_.end(), clss[idx]) == watch_cls_.end())
             continue;
         // 640 坐标 -> 原图坐标
         float x1 = (boxes[idx*4]   - padx) / scale;

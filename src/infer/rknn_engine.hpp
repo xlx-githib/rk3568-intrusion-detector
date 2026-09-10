@@ -7,6 +7,10 @@
 #include "rknn_api.h"
 #include "common/frame.hpp"
 
+// 标准库名字逐个引入(头文件不用 using namespace std，避免污染包含者)
+using std::string;
+using std::vector;
+
 // 单目标检测结果（一帧内多个，像素坐标相对原图）
 struct DetObject {
     int   cls_id = -1;
@@ -34,12 +38,12 @@ public:
     RknnEngine() = default;
     ~RknnEngine() { release(); }
 
-    bool init(const std::string& model_path, const YoloParams& p,
-              const std::vector<int>& watch_cls);   // watch_cls: 白名单(如 {0,2}=person,car)
+    bool init(const string& model_path, const YoloParams& p,
+              const vector<int>& watch_cls);   // watch_cls: 白名单(如 {0,2}=person,car)
     void release();
 
     // 输入一帧原图(RGB888/BGR888, HWC)，输出白名单过滤后的 DetObject 列表
-    bool infer(const FramePtr& in, std::vector<DetObject>& outs);
+    bool infer(const FramePtr& in, vector<DetObject>& outs);
 
 private:
     bool load_model_and_query(const char* model_path);
@@ -50,11 +54,11 @@ private:
     // 模型输入信息（query 得到）
     int in_w_ = 0, in_h_ = 0, in_ch_ = 3;
     rknn_input_output_num io_num_{};
-    std::vector<rknn_tensor_attr> in_attr_, out_attr_;
+    vector<rknn_tensor_attr> in_attr_, out_attr_;
 
     // YOLO 后处理参数与白名单
     YoloParams yp_;
-    std::vector<int> watch_cls_;
+    vector<int> watch_cls_;
     unsigned char* model_buf_ = nullptr;
     bool ok_ = false;
 };

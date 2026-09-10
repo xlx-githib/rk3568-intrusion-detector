@@ -10,11 +10,14 @@
 
 #include "output/reporter.hpp"
 
+// 标准库名字统一引入(替代满屏 std:: 前缀)
+using namespace std;
+
 namespace {
 // 标准 Base64 编码（缩略图字节 → JSON 字段用）
-std::string b64encode(const uint8_t* d, size_t n) {
+string b64encode(const uint8_t* d, size_t n) {
     static const char T[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
+    string out;
     out.reserve(((n + 2) / 3) * 4);
     for (size_t i = 0; i < n; i += 3) {
         uint32_t v = uint32_t(d[i]) << 16;
@@ -29,7 +32,7 @@ std::string b64encode(const uint8_t* d, size_t n) {
 }
 }  // namespace
 
-void Reporter::init(bool enable_report, const std::string& server_ip, int port) {
+void Reporter::init(bool enable_report, const string& server_ip, int port) {
     enabled_ = enable_report;
     ip_ = server_ip;
     port_ = port;
@@ -59,7 +62,7 @@ void Reporter::disconnect() {
     if (fd_ >= 0) { ::close(fd_); fd_ = -1; }
 }
 
-bool Reporter::try_send(const std::string& s) {
+bool Reporter::try_send(const string& s) {
     if (fd_ < 0) connect();
     if (fd_ < 0) return false;
     size_t off = 0;
@@ -77,22 +80,22 @@ bool Reporter::try_send(const std::string& s) {
 
 bool Reporter::report(const Event& e, const char* snapshot) {
     if (!enabled_) return false;
-    std::string s;
+    string s;
     if (!build_json(e, snapshot, 0, 0, nullptr, s)) return false;
     return try_send(s);
 }
 
 bool Reporter::reportImg(const Event& e, const char* snapshot,
-                         int tw, int th, const std::vector<uint8_t>& rgb) {
+                         int tw, int th, const vector<uint8_t>& rgb) {
     if (!enabled_) return false;
-    std::string s;
+    string s;
     if (!build_json(e, snapshot, tw, th, &rgb, s)) return false;
     return try_send(s);
 }
 
-bool Reporter::reportPreview(int tw, int th, const std::vector<uint8_t>& rgb) {
+bool Reporter::reportPreview(int tw, int th, const vector<uint8_t>& rgb) {
     if (!enabled_ || rgb.empty() || tw <= 0 || th <= 0) return false;
-    std::string s;
+    string s;
     char head[96];
     int l = snprintf(head, sizeof(head), "{\"type\":\"PREVIEW\",\"thumb_w\":%d,\"thumb_h\":%d,\"img\":\"",
                      tw, th);
@@ -104,8 +107,8 @@ bool Reporter::reportPreview(int tw, int th, const std::vector<uint8_t>& rgb) {
 }
 
 bool Reporter::build_json(const Event& e, const char* snapshot,
-                          int tw, int th, const std::vector<uint8_t>* rgb,
-                          std::string& out) {
+                          int tw, int th, const vector<uint8_t>* rgb,
+                          string& out) {
     const char* type = "";
     switch (e.type) {
         case EventType::INTRUDE: type = "INTRUDE"; break;

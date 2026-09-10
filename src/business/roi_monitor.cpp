@@ -5,8 +5,11 @@
 
 #include "business/roi_monitor.hpp"
 
+// 标准库名字统一引入(替代满屏 std:: 前缀)
+using namespace std;
+
 void RoiMonitor::configure(const RoiRect& roi, int stay_alarm_sec,
-                           const std::vector<int>& watch_cls,
+                           const vector<int>& watch_cls,
                            int leave_confirm_frames) {
     roi_        = roi;
     stay_us_    = uint64_t(stay_alarm_sec) * 1000000ULL;
@@ -18,16 +21,16 @@ void RoiMonitor::configure(const RoiRect& roi, int stay_alarm_sec,
     leave_cnt_  = 0;
 }
 
-std::vector<Event> RoiMonitor::feed(const std::vector<DetObject>& dets,
+vector<Event> RoiMonitor::feed(const vector<DetObject>& dets,
                                     uint64_t now_us) {
-    std::vector<Event> evs;
+    vector<Event> evs;
 
     // 帧级判定：是否有白名单目标，且其"框底部中心(bx,by)"落在 ROI 内；
     // 记录触发目标的类别(cls)，供事件带上 person/car
     bool inside = false;
     int  trig_cls = -1;
     for (const auto& o : dets) {
-        if (std::find(watch_cls_.begin(), watch_cls_.end(), o.cls_id) == watch_cls_.end())
+        if (find(watch_cls_.begin(), watch_cls_.end(), o.cls_id) == watch_cls_.end())
             continue;
         if (roi_.contains(o.bx, o.by)) { inside = true; trig_cls = o.cls_id; break; }
     }

@@ -3,17 +3,21 @@
 #include <string>
 #include <map>
 
+// 标准库名字逐个引入(头文件不用 using namespace std，避免污染包含者)
+using std::map;
+using std::string;
+
 class Config {
 public:
     // 从文件加载，成功返回 true
-    static bool load(const std::string& path, Config& out);
+    static bool load(const string& path, Config& out);
 
-    bool has(const std::string& k) const;
-    std::string get(const std::string& k, const std::string& def = "") const;
-    int         getInt(const std::string& k, int def = 0) const;
-    double      getDouble(const std::string& k, double def = 0.0) const;
-    bool        getBool(const std::string& k, bool def = false) const;
+    bool has(const string& k) const;
+    string get(const string& k, const string& def = "") const;
+    int         getInt(const string& k, int def = 0) const;
+    double      getDouble(const string& k, double def = 0.0) const;
+    bool        getBool(const string& k, bool def = false) const;
 
 private:
-    std::map<std::string, std::string> kv_;
+    map<string, string> kv_;
 };
