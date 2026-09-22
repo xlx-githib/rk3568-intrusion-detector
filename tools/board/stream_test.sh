@@ -54,7 +54,7 @@ if [ "$PC_IP" = "tcp" ]; then
   exec gst-launch-1.0 -e \
     v4l2src device=/dev/video0 ! \
     video/x-raw,format=NV12,width=$W,height=$H,framerate=$FPS/1 ! \
-    mpph264enc ! h264parse config-interval=1 ! mpegtsmux ! \
+    mpph264enc header-mode=1 ! h264parse config-interval=1 ! mpegtsmux ! \
     tcpserversink host=0.0.0.0 port=$PORT
 fi
 
@@ -81,6 +81,6 @@ echo "== PC 端用 VLC 打开 udp://@:${PORT}  (Ctrl+C 结束推流) =="
 exec gst-launch-1.0 -e \
   v4l2src device=/dev/video0 ! \
   video/x-raw,format=NV12,width=$W,height=$H,framerate=$FPS/1 ! \
-  mpph264enc $ENC_OPTS ! \
+  mpph264enc header-mode=1 $ENC_OPTS ! \
   h264parse config-interval=1 ! mpegtsmux ! \
   udpsink host=$PC_IP port=$PORT
