@@ -45,19 +45,26 @@ fi
 
 PC_IP=${1:-}
 PORT=${2:-5000}
-BR=${3:-2000000}
-GOP=${4:-30}
+BR_KBPS=${3:-}         # 可选：目标码率(kbps)，留空=用编码器默认
+GOP=${4:-}             # 可选：GOP 帧数
 
 if [ -z "$PC_IP" ]; then
-  echo "用法: $0 <PC_IP> [port] [bitrate_bps] [gop]   或   $0 self"
+  echo "用法: $0 <PC_IP> [port] [bitrate_kbps] [gop]   或   $0 self"
+  echo "  提示: 留空码率用默认；属性名可用 gst-inspect-1.0 mpph264enc 查"
   exit 1
 fi
 
-echo "== 推流: ${W}x${H}@${FPS} H.264(MPP硬编码 ${BR}bps, GOP ${GOP}) -> udp://${PC_IP}:${PORT} =="
+# Rockchip mpp 编码器属性名与常规插件不同(无 bitrate)，这里用 bps；留空则不加参数
+ENC_OPTS=""
+if [ -n "$BR_KBPS" ]; then ENC_OPTS="$ENC_OPTS bps=$((BR_KBPS * 1000))"; fi
+if [ -n "$GOP" ]; then ENC_OPTS="$ENC_OPTS gop=$GOP"; fi
+
+echo "== 推流: ${W}x${H}@${FPS} H.264(MPP 硬编码) -> udp://${PC_IP}:${PORT} =="
+echo "   编码参数: ${ENC_OPTS:-（默认，未指定码率/GOP）}"
 echo "== PC 端用 VLC 打开 udp://@:${PORT}  (Ctrl+C 结束推流) =="
 exec gst-launch-1.0 -e \
   v4l2src device=/dev/video0 ! \
   video/x-raw,format=NV12,width=$W,height=$H,framerate=$FPS/1 ! \
-  mpph264enc bitrate=$BR gop=$GOP ! \
+  mpph264enc $ENC_OPTS ! \
   h264parse ! mpegtsmux ! \
   udpsink host=$PC_IP port=$PORT
