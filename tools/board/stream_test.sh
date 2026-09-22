@@ -16,17 +16,25 @@ set -e
 W=1280; H=720; FPS=30
 
 if [ "$1" = "self" ]; then
-  echo "== 板内回环自检: 编码→RTP→解码(仅验证链路, 不显示) =="
+  echo "== 自检1: 同进程 编码→解码 环回(先验证 MPP 编解码器是否可用) =="
   gst-launch-1.0 -e v4l2src device=/dev/video0 num-buffers=$((FPS*5)) ! \
     video/x-raw,format=NV12,width=$W,height=$H,framerate=$FPS/1 ! \
-    mpph264enc ! rtph264pay config-interval=1 ! \
+    mpph264enc ! h264parse ! mppvideodec ! \
+    fpsdisplaysink video-sink=fakesink text-overlay=false sync=false
+  echo
+  echo "== 自检2: RTP 收发环回(验证网络推流链路; 需 depay→parse→decode) =="
+  gst-launch-1.0 -e v4l2src device=/dev/video0 num-buffers=$((FPS*5)) ! \
+    video/x-raw,format=NV12,width=$W,height=$H,framerate=$FPS/1 ! \
+    mpph264enc ! h264parse ! rtph264pay config-interval=1 pt=96 ! \
     udpsink host=127.0.0.1 port=5000 &
   TX=$!
   sleep 1
-  gst-launch-1.0 -e udpsrc port=5000 caps="application/x-rtp,encoding-name=H264,payload=96" ! \
-    rtph264depay ! mppvideodec ! fpsdisplaysink video-sink=fakesink text-overlay=false sync=false
+  gst-launch-1.0 -e udpsrc port=5000 \
+    caps="application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)H264,payload=(int)96" ! \
+    rtph264depay ! h264parse ! mppvideodec ! \
+    fpsdisplaysink video-sink=fakesink text-overlay=false sync=false
   wait $TX || true
-  echo "== 回环完成: 若上方有 fps 输出即编码+解码链路正常 =="
+  echo "== 自检完成: 两段都打印 average fps 即为链路正常 =="
   exit 0
 fi
 
