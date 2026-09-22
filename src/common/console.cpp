@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <poll.h>
+#include <sys/stat.h>
 
 #include "common/console.hpp"
 
@@ -218,9 +219,13 @@ bool Console::applyKv(const string& k, const string& v, bool report) {
 }
 
 void Console::doSave() {
+    string path = conf_path_;
+    size_t slash = path.find_last_of('/');
+    if (slash != string::npos) mkdir(path.substr(0, slash).c_str(), 0755);  // 确保目录存在
+
     vector<string> lines;
     {
-        ifstream in(conf_path_);
+        ifstream in(path);
         string l;
         while (getline(in, l)) lines.push_back(l);
     }
@@ -241,10 +246,14 @@ void Console::doSave() {
         for (auto& l : out) if (l.rfind(string(k) + "=", 0) == 0) { found = true; break; }
         if (!found) out.push_back(string(k) + "=" + kvOf(k));
     }
-    ofstream o(conf_path_, ios::trunc);
+    ofstream o(path, ios::trunc);
+    if (!o && slash != string::npos) {          // 目录不可写：退化到当前目录同名文件
+        path = path.substr(slash + 1);
+        o.open(path, ios::trunc);
+    }
     if (!o) { printf("[con] 写入失败: %s\n", conf_path_.c_str()); return; }
     for (auto& l : out) o << l << "\n";
-    printf("[con] 参数已保存到 %s\n", conf_path_.c_str());
+    printf("[con] 参数已保存到 %s\n", path.c_str());
 }
 
 void Console::doReload() {
