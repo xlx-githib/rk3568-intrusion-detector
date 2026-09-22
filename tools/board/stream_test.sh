@@ -54,7 +54,7 @@ if [ "$PC_IP" = "tcp" ]; then
   exec gst-launch-1.0 -e \
     v4l2src device=/dev/video0 ! \
     video/x-raw,format=NV12,width=$W,height=$H,framerate=$FPS/1 ! \
-    mpph264enc ! h264parse ! mpegtsmux ! \
+    mpph264enc ! h264parse config-interval=1 ! mpegtsmux ! \
     tcpserversink host=0.0.0.0 port=$PORT
 fi
 
@@ -82,5 +82,5 @@ exec gst-launch-1.0 -e \
   v4l2src device=/dev/video0 ! \
   video/x-raw,format=NV12,width=$W,height=$H,framerate=$FPS/1 ! \
   mpph264enc $ENC_OPTS ! \
-  h264parse ! mpegtsmux ! \
+  h264parse config-interval=1 ! mpegtsmux ! \
   udpsink host=$PC_IP port=$PORT
