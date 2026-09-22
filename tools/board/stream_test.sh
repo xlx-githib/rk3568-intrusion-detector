@@ -29,11 +29,16 @@ if [ "$1" = "self" ]; then
     udpsink host=127.0.0.1 port=5000 &
   TX=$!
   sleep 1
+  # 接收端后台跑: UDP 无"流结束"通知, 用 SIGINT 触发 EOS 以打印 fps 统计
   gst-launch-1.0 -e udpsrc port=5000 \
     caps="application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)H264,payload=(int)96" ! \
     rtph264depay ! h264parse ! mppvideodec ! \
-    fpsdisplaysink video-sink=fakesink text-overlay=false sync=false
-  wait $TX || true
+    fpsdisplaysink video-sink=fakesink text-overlay=false sync=false &
+  RX=$!
+  sleep 6
+  kill -INT $RX 2>/dev/null || true
+  wait $RX 2>/dev/null || true
+  wait $TX 2>/dev/null || true
   echo "== 自检完成: 两段都打印 average fps 即为链路正常 =="
   exit 0
 fi
