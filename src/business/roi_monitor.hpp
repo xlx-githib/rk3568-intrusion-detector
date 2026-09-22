@@ -8,27 +8,61 @@
 
 #include "infer/rknn_engine.hpp"
 
-// 标准库名字逐个引入(头文件不用 using namespace std，避免污染包含者)
 using std::string;
 using std::vector;
 
-struct RoiRect {
-    int x = 0, y = 0, w = 0, h = 0;
-    bool contains(float px, float py) const {
+/**
+  * @brief  ROI矩形区域结构体
+  * @note   用于描述图像感兴趣区域，包含坐标宽高，提供点包含判断接口
+  */
+typedef struct
+{
+    int x = 0;      /*!< 矩形左上角X坐标 */
+    int y = 0;      /*!< 矩形左上角Y坐标 */
+    int w = 0;      /*!< 矩形区域宽度 */
+    int h = 0;      /*!< 矩形区域高度 */
+
+    /**
+      * @brief  判断坐标点是否落在当前ROI矩形内部
+      * @param  px: 待判断点x坐标
+      * @param  py: 待判断点y坐标
+      * @retval bool: true 点在矩形内; false 点在矩形外
+      */
+    bool contains(float px, float py) const
+    {
         return px >= x && px <= x + w && py >= y && py <= y + h;
     }
-};
 
+} RoiRect;
+
+/**
+  * @brief  事件类型枚举
+  * @note   用于描述不同类型的事件
+  * @param  INTRUDE: 入侵事件
+  * @param  ALARM: 告警事件
+  * @param  LEAVE: 离开事件
+  * @param  RESOLVE: 解决事件
+  * @related DetObject: 相关的检测对象结构体
+  */
 enum class EventType { INTRUDE, ALARM, LEAVE, RESOLVE };
 
+
+/**
+  * @brief  事件结构体
+  * @note   用于描述触发的事件信息
+  */
 struct Event {
-    EventType type = EventType::INTRUDE;
+    EventType type = EventType::INTRUDE;//事件默认闯入状态
     int    cls_id = -1;
     uint64_t ts_start_us = 0;   // 进入时刻(us)
     uint64_t stay_ms = 0;       // 停留时长
     string snapshot;       // 截图路径(输出线程填写)
 };
 
+/**
+  * @brief  ROI监控器类
+  * @note   用于监控指定ROI区域内的事件
+  */
 class RoiMonitor {
 public:
     // leave_confirm_frames：离开去抖阈值——连续 N 帧“检测不到目标”才算真正离开，
@@ -40,10 +74,25 @@ public:
     // 喂入一帧检测结果(带帧时刻)，产出事件列表
     vector<Event> feed(const vector<DetObject>& dets, uint64_t now_us);
 
+    // ---------- 运行时更新（M3 控制台热更新用，不重置当前状态）----------
+
+    /** @brief 更新警戒区矩形 */
+    void setRoi(const RoiRect& r) { roi_ = r; }
+
+    /** @brief 更新停留告警秒数 */
+    void setStaySec(int s) { stay_us_ = uint64_t(s > 0 ? s : 1) * 1000000ULL; }
+
+    /** @brief 更新离开去抖帧数(连续缺席多少帧才算离开) */
+    void setLeaveConfirm(int n) { leave_confirm_ = n > 0 ? n : 1; }
+
 private:
+    /**
+      * @brief  状态枚举
+      * @note   用于描述监控器的当前状态
+      */
     enum class State { IDLE, INSIDE, ALARMED };
 
-    State st_ = State::IDLE;
+    State st_ = State::IDLE;       //空闲
     RoiRect roi_;
     uint64_t stay_us_ = 0;         // 触发告警所需停留时长(us)
     uint64_t ts_start_us_ = 0;     // 进入时刻(us)

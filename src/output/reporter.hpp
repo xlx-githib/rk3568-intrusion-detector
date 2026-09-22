@@ -18,6 +18,7 @@ public:
     void disconnect();
     // 组 JSON {type,cls,ts_start_ms,stay_ms,snapshot} 并发送；断线自动重连一次
     bool report(const Event& e, const char* snapshot = nullptr);
+    bool connected() const { return fd_ >= 0; }   // 是否已建立 TCP 连接
     // ALARM 附带缩略图(RGB888 tw×th)：JSON 增 thumb_w/thumb_h/img(base64)，PC Qt 端可显示告警画面
     bool reportImg(const Event& e, const char* snapshot,
                    int tw, int th, const vector<uint8_t>& rgb);

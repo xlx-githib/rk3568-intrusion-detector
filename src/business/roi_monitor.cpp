@@ -5,7 +5,6 @@
 
 #include "business/roi_monitor.hpp"
 
-// 标准库名字统一引入(替代满屏 std:: 前缀)
 using namespace std;
 
 void RoiMonitor::configure(const RoiRect& roi, int stay_alarm_sec,
@@ -31,17 +30,17 @@ vector<Event> RoiMonitor::feed(const vector<DetObject>& dets,
     int  trig_cls = -1;
     for (const auto& o : dets) {
         if (find(watch_cls_.begin(), watch_cls_.end(), o.cls_id) == watch_cls_.end())
-            continue;
-        if (roi_.contains(o.bx, o.by)) { inside = true; trig_cls = o.cls_id; break; }
+            continue;//类别不在白名单里面，不关注改类别
+        if (roi_.contains(o.bx, o.by)) { inside = true; trig_cls = o.cls_id; break; }//看底部坐标是否在 ROI 内
     }
 
     if (inside) {
         leave_cnt_ = 0;                          // 抖动回来：复位缺席计数，本次停留继续
         switch (st_) {
         case State::IDLE: {                       // 首次进入
-            st_ = State::INSIDE;
-            ts_start_us_ = now_us;
-            cur_cls_ = trig_cls;
+            st_ = State::INSIDE;//状态： INSIDE(计时)
+            ts_start_us_ = now_us;//记录进入时刻
+            cur_cls_ = trig_cls;//当前类别 记录触发类别
             Event e; e.type = EventType::INTRUDE; e.cls_id = trig_cls;
             e.ts_start_us = now_us; e.stay_ms = 0;
             evs.push_back(e);

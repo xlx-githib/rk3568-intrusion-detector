@@ -22,14 +22,14 @@ class BlockQueue {
 public:
     explicit BlockQueue(size_t cap = 4) : cap_(cap) {}
 
-    void push(T v) {
+    void push(T v) {//生产者
         lock_guard<mutex> lk(m_);
         if (q_.size() >= cap_) q_.pop_front();   // 满则丢最旧
         q_.push_back(move(v));
         cv_.notify_one();
     }
 
-    bool pop(T& out, int timeout_ms = 1000) {
+    bool pop(T& out, int timeout_ms = 1000) {//消费者
         unique_lock<mutex> lk(m_);
         if (!cv_.wait_for(lk, chrono::milliseconds(timeout_ms),
                           [this] { return !q_.empty(); }))

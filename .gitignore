@@ -33,7 +33,15 @@ host/qt_gui/release/
 host/qt_gui/debug/
 host/qt_gui/alarms/
 
+# ---- 本人面试/求职私有笔记(不入公开文档，与 devlog 约定一致) ----
+_interview/
+
 # ---- 板端临时抽帧/预览图(本机查看用，不入库) ----
 tools/board/*.rgb
 tools/board/*.ppm
 tools/board/*.png
+
+# ---- 隐私 / 大文件 / 临时产物 ----
+*.docx
+tools/board/*.mp4
+_*.txt

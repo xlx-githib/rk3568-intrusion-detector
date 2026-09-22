@@ -9,7 +9,6 @@
 
 #include "infer/rknn_engine.hpp"
 
-// 标准库名字统一引入(替代满屏 std:: 前缀)
 using namespace std;
 
 namespace {
@@ -39,7 +38,7 @@ void decode_one_scale(const T* data, int grid_h, int grid_w, int stride,
                       vector<float>& boxes,      // x,y,w,h 平铺
                       vector<float>& scores,
                       vector<int>& clss) {
-    const int grid_len = grid_h * grid_w;
+    const int grid_len = grid_h * grid_w;// 特征图总格子数量 gh * gw
     const int box_size = 5 + num_cls;               // 85
     const int32_t zp   = attr.zp;
     const float  scale = attr.scale;
@@ -153,10 +152,18 @@ bool RknnEngine::load_model_and_query(const char* model_path) {
 bool RknnEngine::init(const string& model_path, const YoloParams& p,
                       const vector<int>& watch_cls) {
     yp_ = p;
+    live_conf_ = p.conf_thresh;      // 运行时阈值初始化为模型默认值
+    live_nms_  = p.nms_thresh;
     watch_cls_ = watch_cls;
     if (!load_model_and_query(model_path.c_str())) return false;
     ok_ = true;
     return true;
+}
+
+// 运行时更新置信度/NMS 阈值(M3 控制台热更新)，非法值忽略
+void RknnEngine::setThresh(float conf, float nms) {
+    if (conf > 0.f && conf < 1.f) live_conf_ = conf;
+    if (nms  > 0.f && nms  < 1.f) live_nms_  = nms;
 }
 
 void RknnEngine::release() {
@@ -229,12 +236,12 @@ bool RknnEngine::infer(const FramePtr& in, vector<DetObject>& outs) {
         const int* anchors = yp_.anchors[s];
         // want_float=1 → 输出已是 float32，统一走 fp 解码（与官方 process_fp / python 一致）
         decode_one_scale((const float*) outputs[s].buf, gh, gw, yp_.strides[s],
-                         anchors, yp_.num_cls, out_attr_[s], yp_.conf_thresh, boxes, scores, clss);
+                         anchors, yp_.num_cls, out_attr_[s], live_conf_.load(), boxes, scores, clss);
     }
     rknn_outputs_release(ctx_, 3, outputs);
 
     vector<int> keep;
-    nms_per_class(boxes, scores, clss, keep, yp_.nms_thresh);
+    nms_per_class(boxes, scores, clss, keep, live_nms_.load());
 
     for (int idx : keep) {
         // 白名单过滤（可配置，如 {0,2}=person,car）

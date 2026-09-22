@@ -11,7 +11,6 @@
 
 #include "capture/v4l2_camera.hpp"
 
-// 标准库名字统一引入(替代满屏 std:: 前缀)
 using namespace std;
 
 namespace {
