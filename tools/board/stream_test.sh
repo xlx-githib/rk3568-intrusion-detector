@@ -45,12 +45,28 @@ fi
 
 PC_IP=${1:-}
 PORT=${2:-5000}
+
+# ---- 模式: tcp (板作服务端, PC 主动连接 —— 绕开 Windows 入站防火墙, 最稳) ----
+if [ "$PC_IP" = "tcp" ]; then
+  echo "== TCP 推流: 板监听 0.0.0.0:${PORT}，PC 端 VLC 打开 tcp://<板IP>:${PORT} =="
+  ip addr show wlan0 2>/dev/null | grep -o 'inet [0-9.]*' | head -1
+  echo "   (上面就是板 IP；PC 端 VLC: 媒体→打开网络串流→ tcp://板IP:${PORT})"
+  exec gst-launch-1.0 -e \
+    v4l2src device=/dev/video0 ! \
+    video/x-raw,format=NV12,width=$W,height=$H,framerate=$FPS/1 ! \
+    mpph264enc ! h264parse ! mpegtsmux ! \
+    tcpserversink host=0.0.0.0 port=$PORT
+fi
+
 BR_KBPS=${3:-}         # 可选：目标码率(kbps)，留空=用编码器默认
 GOP=${4:-}             # 可选：GOP 帧数
 
 if [ -z "$PC_IP" ]; then
-  echo "用法: $0 <PC_IP> [port] [bitrate_kbps] [gop]   或   $0 self"
-  echo "  提示: 留空码率用默认；属性名可用 gst-inspect-1.0 mpph264enc 查"
+  echo "用法:"
+  echo "  $0 <PC_IP> [port] [bitrate_kbps] [gop]   # UDP 推给 PC(VLC 打开 udp://@:port)"
+  echo "  $0 tcp [port]                            # TCP 推流(PC 主动连, 绕过防火墙; 推荐)"
+  echo "  $0 self                                  # 板内回环自检"
+  echo "  提示: 编码属性名可用 gst-inspect-1.0 mpph264enc 查"
   exit 1
 fi
 
