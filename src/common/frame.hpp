@@ -9,7 +9,7 @@
 #include <chrono>
 
 // 标准库名字逐个引入(头文件不用 using namespace std，避免污染包含者)
-using std::chrono;
+namespace chrono = std::chrono;   // 命名空间别名(注: using 声明不能引入命名空间名)
 using std::condition_variable;
 using std::deque;
 using std::lock_guard;
