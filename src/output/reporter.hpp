@@ -14,7 +14,10 @@ using std::vector;
 class Reporter {
 public:
     void init(bool enable_report, const string& server_ip, int port);
-    bool connect();                 // 建立 TCP 连接
+    // 建立 TCP 连接；timeout_ms 是**我们自己的**上限（0=只探测一次立即返回）
+    // ⚠️ 不能直接用阻塞 connect：PC 端没开监听时内核会 SYN 重试几十秒，
+    //    把启动流程/输出线程卡死（推流启动都被拖在后面）
+    bool connect(int timeout_ms = 2000);
     void disconnect();
     // 组 JSON {type,cls,ts_start_ms,stay_ms,snapshot} 并发送；断线自动重连一次
     bool report(const Event& e, const char* snapshot = nullptr);
@@ -27,6 +30,8 @@ public:
 
 private:
     bool try_send(const string& s);
+    // 未连接时尝试重连（带冷却，避免每个预览帧都花时间在 connect 上）
+    bool ensure_connected();
     bool build_json(const Event& e, const char* snapshot,
                     int tw, int th, const vector<uint8_t>* rgb, string& out);
 
@@ -34,5 +39,6 @@ private:
     bool enabled_ = false;
     string ip_;
     int port_ = 9000;
+    uint64_t last_conn_try_ms_ = 0;   // 上次尝试连接的时刻（steady 毫秒）
 };
 

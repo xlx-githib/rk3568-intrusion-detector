@@ -332,7 +332,7 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
 
     Reporter rep;
     rep.init(report_ip && report_ip[0], report_ip ? report_ip : "", report_port);
-    if (report_ip && report_ip[0]) rep.connect();
+    if (report_ip && report_ip[0]) rep.connect(1200);   // 自带超时：PC 没开上位机也不拖慢启动
 
     printf("[pipe] 四线程流水线 ROI=(%d,%d,%d,%d) stay=%ds max=%d帧 上报=%s:%d\n",
            roi.x, roi.y, roi.w, roi.h, stay_sec, max_frames,

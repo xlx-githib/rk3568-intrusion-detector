@@ -1,10 +1,14 @@
 // Reporter 实现（M2-4）：事件 → JSON 行 → TCP 发送，断线自动重连
+#include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <string>
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -14,6 +18,12 @@
 using namespace std;
 
 namespace {
+// 单调时钟毫秒（给重连冷却计时用）
+uint64_t now_ms_steady() {
+    return uint64_t(chrono::duration_cast<chrono::milliseconds>(
+                        chrono::steady_clock::now().time_since_epoch()).count());
+}
+
 // 标准 Base64 编码（缩略图字节 → JSON 字段用）
 string b64encode(const uint8_t* d, size_t n) {
     static const char T[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -38,33 +48,68 @@ void Reporter::init(bool enable_report, const string& server_ip, int port) {
     port_ = port;
 }
 
-bool Reporter::connect() {
+bool Reporter::connect(int timeout_ms) {
     if (!enabled_) return false;
-    fd_ = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd_ < 0) { printf("[rep] socket 失败\n"); return false; }
+    if (fd_ >= 0) return true;
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) { printf("[rep] socket 失败\n"); return false; }
+
     struct sockaddr_in sa;
     memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
     sa.sin_port = htons(port_);
     if (inet_pton(AF_INET, ip_.c_str(), &sa.sin_addr) != 1) {
         printf("[rep] 地址解析失败: %s\n", ip_.c_str());
-        ::close(fd_); fd_ = -1; return false;
+        ::close(fd); return false;
     }
-    if (::connect(fd_, (struct sockaddr*)&sa, sizeof(sa)) < 0) {
-        printf("[rep] 连接 %s:%d 失败\n", ip_.c_str(), port_);
-        ::close(fd_); fd_ = -1; return false;
+
+    // 非阻塞 connect + poll 自己控超时：
+    // 目标不可达时内核默认 SYN 重试很久（几十秒），阻塞式 connect 会把调用线程卡死
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    int r = ::connect(fd, (struct sockaddr*)&sa, sizeof(sa));
+    if (r < 0 && errno != EINPROGRESS) {
+        printf("[rep] 连接 %s:%d 失败: %s\n", ip_.c_str(), port_, strerror(errno));
+        ::close(fd); return false;
     }
+    if (r < 0) {                              // 连接正在建立 → 等可写（或我们自己的超时）
+        struct pollfd p = { fd, POLLOUT, 0 };
+        int pr = poll(&p, 1, timeout_ms);
+        if (pr == 0) {
+            printf("[rep] 连接 %s:%d 超时(%dms)，稍后自动重试\n", ip_.c_str(), port_, timeout_ms);
+            ::close(fd); return false;
+        }
+        if (pr < 0) { ::close(fd); return false; }
+        int err = 0;
+        socklen_t el = sizeof(err);
+        getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &el);   // poll 可写≠连上，必须查 SO_ERROR
+        if (err != 0) {
+            printf("[rep] 连接 %s:%d 失败: %s\n", ip_.c_str(), port_, strerror(err));
+            ::close(fd); return false;
+        }
+    }
+    fcntl(fd, F_SETFL, flags);                // 恢复阻塞：后面的 send 走常规语义
+    fd_ = fd;
     printf("[rep] 已连接 %s:%d\n", ip_.c_str(), port_);
     return true;
 }
 
+bool Reporter::ensure_connected() {
+    if (fd_ >= 0) return true;
+    uint64_t now = now_ms_steady();
+    if (now - last_conn_try_ms_ < 2000) return false;   // 2s 冷却：别让每个预览帧都去 connect
+    last_conn_try_ms_ = now;
+    return connect(500);
+}
+
 void Reporter::disconnect() {
     if (fd_ >= 0) { ::close(fd_); fd_ = -1; }
+    last_conn_try_ms_ = 0;    // 允许下次立刻重连
 }
 
 bool Reporter::try_send(const string& s) {
-    if (fd_ < 0) connect();
-    if (fd_ < 0) return false;
+    if (!ensure_connected()) return false;
     size_t off = 0;
     while (off < s.size()) {                 // 大消息(缩略图)可能需多次 send
         ssize_t n = send(fd_, s.data() + off, s.size() - off, MSG_NOSIGNAL);
@@ -95,6 +140,8 @@ bool Reporter::reportImg(const Event& e, const char* snapshot,
 
 bool Reporter::reportPreview(int tw, int th, const vector<uint8_t>& rgb) {
     if (!enabled_ || rgb.empty() || tw <= 0 || th <= 0) return false;
+    // 未连接时不编码（320x180→base64 约 230KB，白做很亏）
+    if (!ensure_connected()) return false;
     string s;
     char head[96];
     int l = snprintf(head, sizeof(head), "{\"type\":\"PREVIEW\",\"thumb_w\":%d,\"thumb_h\":%d,\"img\":\"",
