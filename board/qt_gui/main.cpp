@@ -21,6 +21,7 @@
 #include <QFontMetrics>
 #include <QImage>
 #include <QPainter>
+#include <QPixmap>
 #include <QTime>
 #include <QTimer>
 #include <QVector>
@@ -52,7 +53,7 @@ public:
             bool need = false;
             QImage img;
             if (src_->takeFrame(img)) { frame_ = img; ++got_; need = true; }
-            if (link_->dirty()) { link_->clearDirty(); trackEvent(); need = true; }
+            if (link_->dirty()) { link_->clearDirty(); trackEvent(); need = true; side_dirty_ = true; }
             if (need || frame_.isNull()) update();   // 无画面时让占位动画继续动
         });
         t->start(10);
@@ -88,8 +89,10 @@ protected:
 
         p.fillRect(vr, Qt::black);
         if (!frame_.isNull()) {
-            // 解码输出(640x360) → 视频区缩放。SmoothPixmapTransform 好看但费 CPU，卡就改 false
-            p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+            // ⚠️ **别开 SmoothPixmapTransform**：在 1920x1080 屏上把 640x360 平滑放大到 ~1500x850，
+            //    每帧要双线性插值 127 万像素，实测 UI 直接从 31fps 掉到 13fps（顶掉 56%）。
+            //    最近邻放大粗糙一点，但快好几倍；画面本身分辨率不高，平滑反而看不出好处。
+            p.setRenderHint(QPainter::SmoothPixmapTransform, false);
             p.drawImage(vr, frame_);
         } else {
             drawWaiting(p, vr);
@@ -98,7 +101,17 @@ protected:
         p.drawRect(vr);
 
         drawOverlay(p, vr);      // ROI 黄框 + 检测框
-        drawSidebar(p, side);    // 右栏：状态 / 参数 / 事件列表
+
+        // ---- 右栏：内容 100ms 才变一次，缓存成 pixmap，每帧只做一次 blit ----
+        // （之前每帧重画几十行文字+事件列表，光字形渲染就很贵）
+        if (side_dirty_ || side_cache_.size() != side.size()) {
+            side_cache_ = QPixmap(side.size());
+            side_cache_.fill(QColor(20, 22, 28));
+            QPainter sp(&side_cache_);
+            drawSidebar(sp, QRect(0, 0, side.width(), side.height()));
+            side_dirty_ = false;
+        }
+        p.drawPixmap(side.topLeft(), side_cache_);
     }
 
 private:
@@ -259,6 +272,8 @@ private:
     uint16_t port_ = 0;
     QElapsedTimer et_;
     QImage frame_;
+    QPixmap side_cache_;            // 右栏缓存（内容变化时才重画）
+    bool side_dirty_ = true;
     QVector<QString> ev_hist_;      // 最近事件文本
     QString last_ev_;               // 去重用：上次记录的“最近事件”
     unsigned long long last_ev_stay_ = 0;
@@ -273,18 +288,20 @@ int main(int argc, char** argv) {
     signal(SIGINT, on_sigint);       // Wayland/linuxfb 都没有窗口管理器，Ctrl+C 自己接管
     QApplication app(argc, argv);
 
-    // 端口可用参数覆盖：argv[1]=视频端口(与主程序 STREAM_PORT 对齐)，argv[2]=状态端口
+    // 参数：argv[1]=视频端口，argv[2]=状态端口，argv[3]=解码输出宽度（默认 640，调大更清晰但更费 CPU）
     uint16_t port = 5000, stat_port = 9100;
+    int out_w = 640;
     if (argc > 1) { int v = atoi(argv[1]); if (v > 0) port = uint16_t(v); }
     if (argc > 2) { int v = atoi(argv[2]); if (v > 0) stat_port = uint16_t(v); }
+    if (argc > 3) { int v = atoi(argv[3]); if (v >= 320) out_w = v; }
 
-    printf("[qt] Qt=%s  platform=%s  视频端口=%u  状态端口=%u\n", qVersion(),
+    printf("[qt] Qt=%s  platform=%s  视频端口=%u  状态端口=%u  解码输出=%dx%d\n", qVersion(),
            QApplication::platformName().toUtf8().constData(),
-           unsigned(port), unsigned(stat_port));
+           unsigned(port), unsigned(stat_port), out_w, out_w * 9 / 16);
     fflush(stdout);
 
     GstSource src;
-    src.start(port, 640, 360);       // 不要求主程序此刻在推流（会自动重连）
+    src.start(port, out_w, out_w * 9 / 16);   // 不要求主程序此刻在推流（会自动重连）
 
     StateLink link;
     link.start(stat_port);           // 不要求主程序此刻在跑（会自动重连）
