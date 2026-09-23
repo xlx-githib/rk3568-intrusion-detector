@@ -8,24 +8,26 @@
 | 项 | 结果 | 对方案的影响 |
 |---|---|---|
 | Qt 模块 | 完整（Core/Gui/**Widgets**/Multimedia+GstTools/Quick/Qml…） | 用 Qt Widgets 即可 |
-| 平台插件 | `libqlinuxfb.so`、`wayland-egl`、`wayland-generic`、offscreen、vnc | **没有 eglfs** → GUI 走 **linuxfb** |
-| 屏幕 | `/dev/fb0` 存在，`1080x1920 @32bpp`（DRM 模拟 fb，`/proc/fb` name 为空） | 纯 CPU raster 渲染，性能要实测 |
+| 平台插件 | `libqlinuxfb.so`、`wayland-egl`、`wayland-generic`、offscreen、vnc | **没有 eglfs** + 固件是 Weston → GUI 必须走 **wayland** |
+| 屏幕 | fb `1080x1920@32bpp`；**Wayland 逻辑尺寸 `720x1280`（竖屏）** | 纯 CPU raster 渲染：实测 UI 稳定 **30.8 fps** |
 | DRM | `card0`/`card1` + `renderD128/129` | 后续要 GPU 加速有基础 |
 | GStreamer | `kmssink` / `fbdevsink` / `waylandsink` + `mppvideodec`(硬解) | 视频渲染路径可选 |
 | 输入 | `event0~event8`、`mouse*` | 触摸/鼠标交互可行 |
 | SDK | staging 里有 **Qt5 头文件 + .so**，但**没有 host qmake/moc** | 自己写编译命令，避开 qmake/moc |
+| 实测 | 解码收帧 1463 / UI 显示 1184 / 顶掉 279（≈19%），UI 31.3 fps | 丢帧策略生效，延迟不堆积 |
 
 ## 2. 技术路线
 
-**Qt Widgets + linuxfb + 自己起 gst pipeline（appsink 取帧 → QImage 自绘）**
+**Qt Widgets + Wayland + 自己起 gst pipeline（appsink 取帧 → QImage 自绘）**
 
 - 不用 `QMediaPlayer`：它对 "MPEG-TS over TCP" 的 MRL 支持很差，而且会把 MPP 解码细节挡住（本来就想学）
 - 不用 eglfs：板子没这个插件
-- 不用 kmssink 直接输出：会与 Qt 抢同一个 fb
+- **不用 linuxfb / 不去抢 DRM**：厂固件里 weston 持有 DRM master，我们只当 Wayland 客户端
+  （见第 4 节“显示路线”里的两次尝试与结论）
 
 ```
 板端 Qt 应用
-├─ 主界面(QWidget)       ← linuxfb 全屏，CPU raster
+├─ 主界面(QWidget)       ← wayland 全屏，CPU raster（实测 30.8 fps @720x1280）
 │   ├─ 视频区             ← 自己画的 VideoWidget(QImage)
 │   ├─ ROI/检测框叠加      ← 在 QImage 上画
 │   ├─ 事件列表           ← 同 PC 上位机的着色规则

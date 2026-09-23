@@ -37,15 +37,16 @@ class TestWidget : public QWidget {
 public:
     TestWidget(GstSource* src, uint16_t port) : src_(src), port_(port) {
         et_.start();
-        // ~30fps 重绘；同时把视频源的最新一帧取过来（取不到就继续显示上一帧）
+        // 10ms 轮询取帧（远快于 30fps 的产帧速度）→ 每次都能拿到最新帧；
+        // 而且**只有取到新帧才重绘**：没帧时不空转重绘，省 CPU（实测能把“顶掉”降下来）
         auto* t = new QTimer(this);
         QObject::connect(t, &QTimer::timeout, this, [this] {
             ++tick_;
             QImage img;
-            if (src_->takeFrame(img)) { frame_ = img; ++got_; }
-            update();
+            if (src_->takeFrame(img)) { frame_ = img; ++got_; update(); }
+            else if (frame_.isNull()) update();     // 还没画面时让占位动画继续动
         });
-        t->start(33);
+        t->start(10);
         // 每秒报一次真实刷新率 + 收帧情况
         auto* t2 = new QTimer(this);
         QObject::connect(t2, &QTimer::timeout, this, [this] {
