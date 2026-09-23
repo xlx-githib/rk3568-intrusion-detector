@@ -19,10 +19,14 @@
 
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
+#include <unistd.h>
 
 namespace {
-volatile sig_atomic_t g_stop = 0;
-void on_sigint(int) { g_stop = 1; }
+// 信号处理器里只能调 async-signal-safe 的函数（printf/quit 都不算）。
+// 之前只设标志位、靠 QTimer 去查，实测 ^C 退不出来（DRM/linuxfb 下事件循环没能及时处理）
+// → 直接 _exit()，简单可靠。
+void on_sigint(int) { _exit(0); }
 }  // namespace
 
 class TestWidget : public QWidget {
@@ -95,16 +99,10 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     printf("[qttest] Qt=%s  platform=%s\n", qVersion(),
            QApplication::platformName().toUtf8().constData());
+    printf("[qttest] 提示：若无文字但有图形，那是板端字体问题；看色条/方块即可\n");
     fflush(stdout);
 
     TestWidget w;
     w.showFullScreen();
-
-    QTimer stopTimer;                // 收到 SIGINT 后优雅退出
-    QObject::connect(&stopTimer, &QTimer::timeout, [&app] {
-        if (g_stop) app.quit();
-    });
-    stopTimer.start(200);
-
     return app.exec();
 }

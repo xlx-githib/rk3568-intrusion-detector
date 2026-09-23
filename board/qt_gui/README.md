@@ -36,6 +36,11 @@
 ## 3. 分步计划
 
 - [x] **Step 1 最小验证**（当前）：`main.cpp` —— 全屏测试图，确认能显示、方向/分辨率、CPU 刷新帧率
+  - ⚠️ **必须加 `QT_QPA_FB_DRM=1`**：板子 `/dev/fb0` 是 DRM 模拟的 fbdev 节点，
+    Qt 的 linuxfb 插件默认去 `mmap` 它 → `Failed to mmap framebuffer (Invalid argument)` +
+    `linuxfb: Failed to initialize screen` + `no screens available` → 直接 abort。
+    加上 `QT_QPA_FB_DRM=1` 后改走 DRM dumb buffer，屏幕才能初始化成功
+  - 板端**字体有问题**（`load glyph failed err=24`）→ 文字画不出来，图形正常
 - [ ] Step 2 接视频：gst 拉流 + `mppvideodec` 硬解 → `QImage` 显示
 - [ ] Step 3 界面：ROI/检测框叠加、事件列表、参数页
 
@@ -49,10 +54,10 @@ bash build.sh                       # 产物 rkqttest
 # 推板
 adb push rkqttest /userdata/aidemo/
 
-# 板上运行
+# 板上运行（注意必须带 QT_QPA_FB_DRM=1，见上）
 adb shell
 cd /userdata/aidemo
-QT_QPA_PLATFORM=linuxfb ./rkqttest
+QT_QPA_FB_DRM=1 QT_QPA_PLATFORM=linuxfb ./rkqttest
 ```
 
 要点：
