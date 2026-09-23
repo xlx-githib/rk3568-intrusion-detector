@@ -22,6 +22,7 @@
 #include "business/roi_monitor.hpp"
 #include "capture/v4l2_camera.hpp"
 #include "output/reporter.hpp"
+#include "output/statlink.hpp"
 #include "output/streamer.hpp"
 
 using namespace std;
@@ -330,6 +331,12 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
                    "-analyzeduration 0 -framedrop -f mpegts tcp://<板IP>:%d\n", stream_port);
     }
 
+    // ---- 本机状态通道（给板端 Qt 界面）：默认 9100，STAT_PORT=0 可关 ----
+    StatLink stat;
+    int stat_port = 9100;
+    if (const char* v = getenv("STAT_PORT")) stat_port = atoi(v);
+    if (stat_port > 0) stat.start(stat_port);
+
     Reporter rep;
     rep.init(report_ip && report_ip[0], report_ip ? report_ip : "", report_port);
     if (report_ip && report_ip[0]) rep.connect(1200);   // 自带超时：PC 没开上位机也不拖慢启动
@@ -343,6 +350,9 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
     BlockQueue<shared_ptr<EventMsg>> evQ(16);      // Business→Output
     atomic<int> nInfer{0}, nEvent{0}, nAlarm{0};
     uint64_t lastPreviewUs = 0;                         // 现场预览节流(biz 线程写)
+    uint64_t lastStatUs = 0;                            // 状态推送节流(biz 线程写)
+    string lastEvName;                                  // 最近一条事件(发给板端 Qt 画事件条)
+    uint64_t lastEvStay = 0;
     auto t0 = chrono::steady_clock::now();
 
     // ---- 运行时控制台(M3)：在线调参/热更新，免去改参重编译 ----
@@ -443,9 +453,31 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
             }
             auto evs = mon.feed(io->dets, now);
             for (const auto& e : evs) {
+                lastEvName = ev_name(e.type);           // 记给状态通道(板端 Qt)
+                lastEvStay = e.stay_ms;
                 auto em = make_shared<EventMsg>();
                 em->ev = e; em->frame = io->frame; em->dets = io->dets;
                 evQ.push(em);
+            }
+            // 每 100ms 把状态推给板端 Qt（ROI/检测框/统计/最近事件）
+            // 注意快照是值拷贝，拷完就撒手：不阻塞数据路径，也不和 UI 争锁
+            if (now >= lastStatUs + 100000ULL) {
+                lastStatUs = now;
+                double dts = chrono::duration<double>(chrono::steady_clock::now() - t0).count();
+                StateSnapshot ss;
+                ss.frame_w = int(io->frame->width);
+                ss.frame_h = int(io->frame->height);
+                ss.roi_x = rt.roi_x; ss.roi_y = rt.roi_y;
+                ss.roi_w = rt.roi_w; ss.roi_h = rt.roi_h;
+                ss.stay_sec = rt.stay_sec; ss.leave_confirm = rt.leave_confirm;
+                ss.conf_pct = rt.conf_pct; ss.nms_pct = rt.nms_pct;
+                ss.log_level = rt.log_level; ss.report_on = rt.report_on;
+                ss.fps = dts > 0 ? nInfer.load() / dts : 0.0;
+                ss.infer = nInfer.load(); ss.events = nEvent.load(); ss.alarms = nAlarm.load();
+                ss.pushed = strm.pushed(); ss.dropped = strm.dropped();
+                ss.dets = io->dets;
+                ss.last_event = lastEvName; ss.last_stay_ms = lastEvStay;
+                stat.publish(ss);
             }
         }
     });
@@ -499,6 +531,7 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
     capT.join(); infT.join(); bizT.join(); outT.join();
     con.stop();
     strm.stop();          // 停推流（发 EOS，已连上的播放器正常收尾）
+    stat.stop();          // 停状态通道
     rep.disconnect();
     auto t1 = chrono::steady_clock::now();
     double dt = chrono::duration<double>(t1 - t0).count();

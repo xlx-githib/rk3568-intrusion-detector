@@ -32,6 +32,7 @@ set(SRC
     ${CMAKE_SOURCE_DIR}/src/infer/rknn_engine.cpp
     ${CMAKE_SOURCE_DIR}/src/business/roi_monitor.cpp
     ${CMAKE_SOURCE_DIR}/src/output/reporter.cpp
+    ${CMAKE_SOURCE_DIR}/src/output/statlink.cpp
     ${CMAKE_SOURCE_DIR}/src/output/streamer.cpp
 )
 
