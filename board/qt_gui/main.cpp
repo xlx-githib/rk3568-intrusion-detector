@@ -207,25 +207,37 @@ private:
         const BoardState& st = link_->state();
         p.fillRect(s, QColor(20, 22, 28));
 
-        const int x = s.x() + 16;
-        const int right = s.right() - 16;
-        int y = s.y() + 44;
-        const int lh = 30;
+        const int x = s.x() + 14;
+        const int right = s.right() - 14;
+        const int lh = 26;                    // 行高
+        const int kPt = 14;                   // 正文键值字号
+        const int avail = s.width() - 28;     // 单行可用宽度
+        int y = s.y() + 38;
 
         p.setPen(QColor(90, 200, 255));
-        p.setFont(fontFor(21));
+        p.setFont(fontFor(19));
         p.drawText(x, y, QStringLiteral("RK3568 入侵检测"));
         y += 14;
         p.setPen(QPen(QColor(60, 70, 90), 2));
         p.drawLine(x, y, right, y);
-        y += 36;
+        y += 32;
 
-        p.setFont(fontFor(16, false));
+        p.setFont(fontFor(kPt, false));
+        // 键左对齐、值右对齐；**值太长就自动缩字号**，否则会撞上键名甚至画出栏外
         auto line = [&](const QString& k, const QString& v, const QColor& vc = QColor(235, 235, 245)) {
+            const QFont base = fontFor(kPt, false);
+            p.setFont(base);
             p.setPen(QColor(150, 158, 175));
             p.drawText(x, y, k);
+
+            const int room = avail - QFontMetrics(base).horizontalAdvance(k) - 8;
+            QFont vf = base;
+            const int need = QFontMetrics(vf).horizontalAdvance(v);
+            if (need > room && need > 0 && room > 20)
+                vf.setPointSizeF(qMax(9.0, vf.pointSizeF() * double(room) / need));
+            p.setFont(vf);
             p.setPen(vc);
-            p.drawText(QRect(x, y - 22, s.width() - 32, 26), Qt::AlignRight, v);
+            p.drawText(QRect(x, y - 20, avail, 24), Qt::AlignRight, v);
             y += lh;
         };
 
@@ -234,38 +246,37 @@ private:
              st.valid ? QColor(120, 240, 140) : QColor(250, 190, 80));
         line(QStringLiteral("检测帧率"), QStringLiteral("%1 fps").arg(st.fps, 0, 'f', 1));
         line(QStringLiteral("推理帧数"), QString::number(st.infer));
-        line(QStringLiteral("事件 / 告警"), QStringLiteral("%1 / %2").arg(st.events).arg(st.alarms));
-        line(QStringLiteral("推流 成功/丢"),
-             QStringLiteral("%1 / %2").arg(st.pushed).arg(st.dropped));
+        line(QStringLiteral("事件/告警"), QStringLiteral("%1 / %2").arg(st.events).arg(st.alarms));
+        line(QStringLiteral("推流"), QStringLiteral("%1 / 丢 %2").arg(st.pushed).arg(st.dropped));
 
-        y += 12;
+        y += 10;
         p.setPen(QPen(QColor(60, 70, 90), 2));
         p.drawLine(x, y, right, y);
-        y += 36;
+        y += 32;
 
-        line(QStringLiteral("ROI"), QStringLiteral("%1,%2  %3x%4")
+        line(QStringLiteral("ROI"), QStringLiteral("%1,%2 %3x%4")
                  .arg(st.roi_x).arg(st.roi_y).arg(st.roi_w).arg(st.roi_h));
         line(QStringLiteral("停留阈值"), QStringLiteral("%1 s").arg(st.stay_sec));
         line(QStringLiteral("离开去抖"), QStringLiteral("%1 帧").arg(st.leave_confirm));
-        line(QStringLiteral("conf / nms"),
-             QStringLiteral("%1 / %2").arg(st.conf, 0, 'f', 2).arg(st.nms, 0, 'f', 2));
+        line(QStringLiteral("conf/nms"),
+             QStringLiteral("%1/%2").arg(st.conf, 0, 'f', 2).arg(st.nms, 0, 'f', 2));
 
         // ---- 最近事件（新的在上）----
-        y += 16;
+        y += 14;
         p.setPen(QColor(90, 200, 255));
-        p.setFont(fontFor(18));
+        p.setFont(fontFor(16));
         p.drawText(x, y, QStringLiteral("最近事件"));
-        y += 30;
-        p.setFont(fontFor(15, false));
+        y += 26;
+        p.setFont(fontFor(13, false));
         if (ev_hist_.isEmpty()) {
             p.setPen(QColor(130, 135, 150));
             p.drawText(x, y, QStringLiteral("（暂无）"));
         }
         for (const QString& e : ev_hist_) {
-            if (y > s.bottom() - 16) break;
+            if (y > s.bottom() - 14) break;
             p.setPen(evColor(e));
             p.drawText(x, y, e);
-            y += 24;
+            y += 21;
         }
     }
 
