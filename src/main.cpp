@@ -456,6 +456,9 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
             if (!evQ.pop(em, 200)) continue;
             if (!em) break;
             if (em->preview) {                          // 现场预览帧
+                // 退出中就别再编码/上报了：预览是周期性产生的，清干净 evQ 才能让 join 立刻返回
+                // （曾出过 quit 卡住：上报断开后这里每次都要 connect 重连，旧版阻塞 connect 会等几十秒）
+                if (quit.load()) continue;
                 vector<uint8_t> thumb;
                 const int TW = 320, TH = 180;     // 清晰度优先(快网)
                 downscale_rgb(em->frame, TW, TH, thumb);

@@ -109,7 +109,18 @@ appsrc name=src is-live=true block=false format=time do-timestamp=false
 - **`sync=false`**：`tcpserversink` 不做时钟同步，降延迟。
 - **NV12 复用**：`V4l2Camera::setKeepNv12(true)` 才多拷一份 NV12（1.38MB/帧，亚毫秒）；不推流时不付这个代价。
 
-## 7. 待办 / 后续
+## 7. 实测数据（2026-09-23，板端 1280x720@30）
+
+| 指标 | 数值 |
+|---|---|
+| 推流帧数 / 丢帧 | **1419 帧 / 丢 0 帧** |
+| 检测帧率（推流开启） | 16.7 fps |
+| 检测帧率（不推流） | 16.7 fps（一致 → 推流几乎零额外成本） |
+| 端到端延迟 | < 1s（起播约 1s） |
+| 码率（2000kbps 设定） | 实测约 2~3.3 Mbps |
+| NV12 缓冲 | `plane0=1382400` == `1280*720*3/2`，无行对齐 padding |
+
+## 8. 待办 / 后续
 
 - [ ] H.265（`mpph265enc`）对比：同画质码率约省 30~40%，代价是编码耗时与兼容性
 - [ ] 板端 Qt 显示视频（迭代3）：`mppvideodec` 或 EGL 直出到 DRM plane
