@@ -35,13 +35,8 @@
 
 ## 3. 分步计划
 
-- [x] **Step 1 最小验证**（当前）：`main.cpp` —— 全屏测试图，确认能显示、方向/分辨率、CPU 刷新帧率
-  - ⚠️ **必须加 `QT_QPA_FB_DRM=1`**：板子 `/dev/fb0` 是 DRM 模拟的 fbdev 节点，
-    Qt 的 linuxfb 插件默认去 `mmap` 它 → `Failed to mmap framebuffer (Invalid argument)` +
-    `linuxfb: Failed to initialize screen` + `no screens available` → 直接 abort。
-    加上 `QT_QPA_FB_DRM=1` 后改走 DRM dumb buffer，屏幕才能初始化成功
-  - 板端**字体有问题**（`load glyph failed err=24`）→ 文字画不出来，图形正常
-- [ ] Step 2 接视频：gst 拉流 + `mppvideodec` 硬解 → `QImage` 显示
+- [x] **Step 1 最小验证**：全屏测试图 → 确认能显示、方向/分辨率、CPU 刷新帧率
+- [x] **Step 2 接视频**（当前）：`gstsource.*` —— 拉流 + `mppvideodec` 硬解 → `QImage` → 画到窗口
 - [ ] Step 3 界面：ROI/检测框叠加、事件列表、参数页
 
 ## 4. 编译与运行
@@ -54,10 +49,12 @@ bash build.sh                       # 产物 rkqttest
 # 推板
 adb push rkqttest /userdata/aidemo/
 
-# 板上运行（注意必须带 QT_QPA_FB_DRM=1，见上）
+# 板上运行（必须 Wayland，理由见下面“显示路线”）
 adb shell
 cd /userdata/aidemo
-QT_QPA_FB_DRM=1 QT_QPA_PLATFORM=linuxfb ./rkqttest
+export XDG_RUNTIME_DIR=/run
+export WAYLAND_DISPLAY=wayland-0
+QT_QPA_PLATFORM=wayland ./rkqttest          # 可加端口参数，默认 5000
 ```
 
 要点：
@@ -73,10 +70,56 @@ QT_QPA_FB_DRM=1 QT_QPA_PLATFORM=linuxfb ./rkqttest
   export QT_QPA_FONTDIR=/usr/share/fonts
   ```
 
-### 如果 linuxfb 写不进 fb0（黑屏/没反应）
+### 显示路线：必须用 Wayland，不要去抢 DRM（重要）
 
-按顺序试：
-1. `QT_QPA_PLATFORM=linuxfb:fb=/dev/fb0 ./rkqttest`
-2. `QT_QPA_FB_DRM=1 QT_QPA_PLATFORM=linuxfb ./rkqttest`（Qt 5.15 的 linuxfb 支持走 DRM）
-3. 先 `cat /dev/urandom > /dev/fb0` 看屏幕有没有雪花 —— 有雪花说明 fb0 可写，问题在 Qt；没雪花说明 fb0 只是 DRM 的模拟节点
-4. 走 wayland：板上启 `weston`，然后 `QT_QPA_PLATFORM=wayland ./rkqttest`
+板子固件是 **Weston + Wayland** 架构：
+
+```
+root  628  /usr/bin/weston -w                 ← 合成器(占着 DRM master)
+root  714  /usr/libexec/weston-desktop-shell
+root  716  /opt/ui/systemui                   ← 正点原子出厂 UI（Wayland 客户端）
+```
+
+我们踩过的两条死路：
+- `QT_QPA_PLATFORM=linuxfb` → `Failed to mmap framebuffer (Invalid argument)` +
+  `linuxfb: Failed to initialize screen` + `no screens available` → abort。
+  原因：`/dev/fb0` 是 **DRM 模拟的 fbdev 节点**，Qt 按 `virtual_size × bpp/8` 算的
+  mmap 长度和驱动的 `smem_len` 对不上
+- `QT_QPA_FB_DRM=1 QT_QPA_PLATFORM=linuxfb` → 屏幕**亮一下就恢复出厂界面**：
+  Qt 确实画上去了，但 weston 是 DRM master，立刻把显示抢回去
+
+✅ 正确做法：**当 Wayland 客户端**，让 weston 负责合成（还能吃到 GPU 加速）：
+
+```bash
+export XDG_RUNTIME_DIR=/run         # weston 的 socket 在这；别用 /var/run（符号链接，Qt 会抱怨）
+export WAYLAND_DISPLAY=wayland-0
+QT_QPA_PLATFORM=wayland ./rkqttest
+```
+
+> 这也解释了为什么板子的 Qt 插件里有 `libqwayland-egl.so` / `libqwayland-generic.so`
+> 而**没有 eglfs** —— 固件本来就是按 Wayland 场景配的。
+
+### 字体
+- 板上字体很全：`/usr/share/fonts/{liberation,dejavu,noto-sans-sc,source-han-sans-cn,...}`
+- 但**不指定族名**时 Qt 的 fallback 会失败（`load glyph failed err=24`，一个字都画不出来）
+  → 代码里显式用 `Liberation Sans`（`fontFor()` 里带 DejaVu 兜底）
+
+## 5. 视频链路（Step 2）
+
+```
+主程序: V4L2 → NV12 → appsrc → mpph264enc → MPEG-TS → tcpserversink:5000
+                            │
+板端 Qt: tcpclientsrc(127.0.0.1:5000) ! tsdemux ! h264parse ! mppvideodec(硬解)
+         ! videoscale ! videoconvert ! video/x-raw,format=RGB,width=640,height=360
+         ! appsink(max-buffers=2, drop=true)
+         → 拉帧线程取 sample → QImage 副本 → "最新一帧"(mutex)
+         → UI 线程 QTimer 每 33ms takeFrame() → drawImage 到视频区
+```
+
+设计要点：
+- **板内自连走 `127.0.0.1`**：不经过 WiFi，排掉网络变量；也方便单机演示
+- **只存“最新一帧”**：UI 画得慢就自动丢帧，**永远不会堆积延迟**
+- **缩放放在 gst 侧**（`videoscale` → 640x360 后再转 RGB）：比全分辨率转换省 CPU
+- **不用 Qt 信号槽跳线程**（需 moc）：用 mutex + QTimer 轮询，效果一样
+- 运行时会打印：`解码收帧 / 显示 / 顶掉` 三个计数 —— “顶掉”持续增长说明 UI 跟不上，
+  可把 `takeFrame` 的 33ms 调大、或把解码输出尺寸再调小
