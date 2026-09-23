@@ -2,7 +2,9 @@
 // 板端视频源：GStreamer 拉流(MPEG-TS over TCP) → mppvideodec 硬解 → appsink → QImage
 //
 // 设计要点：
-//   1) start() 后内部起一个"拉帧线程"，循环 gst_app_sink_try_pull_sample()
+//   1) start() 只起一个“拉帧线程”；**建管道/连流在缫程里做** —— 因为 `tcpclientsrc` 是主动连接，
+//      主程序还没推流时连不上，整个管道会直接进 error 状态。这不该算致命错误 →
+//      缫程里发现出错/断开就拆掉重建，每秒重试，直到连上为止
 //   2) 只保存**最新一帧**（mutex 保护）：UI 画得慢就自动丢帧，**永远不会堆积延迟**
 //   3) UI 线程用 QTimer 按自己的节奏 takeFrame()，与解码线程完全解耦（慢的一方不影响快的一方）
 //
@@ -33,6 +35,7 @@ public:
 
     // port        : 推流端口（板内自连走 127.0.0.1，省掉 WiFi 这个变量）
     // out_w/out_h : 解码后缩放到的尺寸（越小，后续转换/绘制越省 CPU）
+    // 注意：本函数只启动“拉流线程”，**不要求对端此刻已在推流**（未连上会一直重试）
     bool start(uint16_t port, int out_w = 640, int out_h = 360);
     void stop();
 
@@ -45,11 +48,18 @@ public:
 
 private:
     void pullLoop();
+    bool openPipeline();           // 建管道 + 置 PLAYING（失败返回 false，由 pullLoop 负责重试）
+    void closePipeline();
 
     void* pipeline_ = nullptr;     // GstPipeline*（擦除类型：头文件不依赖 gst）
     void* sink_ = nullptr;         // GstAppSink*（额外持有引用）
+    void* bus_ = nullptr;          // GstBus*（用来发现“连不上/流中断”）
     thread th_;
     std::atomic<bool> running_{false};
+
+    uint16_t port_ = 0;
+    int out_w_ = 640, out_h_ = 360;
+    bool warned_ = false;          // “还没连上”的提示只打一次，避免刷屏
 
     mutex m_;
     QImage latest_;
