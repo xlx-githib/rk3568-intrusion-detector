@@ -5,11 +5,13 @@
 #              ./stream_test.sh 192.168.43.45 5000 2000 30
 #   板内回环自检(不需要 PC 播放器):
 #              ./stream_test.sh self
-# PC 端接收(VLC 最省事):
-#   VLC → 媒体 → 打开网络串流 → udp://@:5000
-#   或 ffplay: ffplay -fflags nobuffer -flags low_delay udp://@:5000
+# PC 端接收(VLC/ffplay):
+#   低延迟播放(推荐, 实测 <1s):
+#     ffplay -fflags nobuffer -flags low_delay -probesize 32 -analyzeduration 0 -framedrop -f mpegts tcp://<板IP>:5000
+#   VLC: 媒体→打开网络串流→ tcp://<板IP>:5000:demux=ts
 # 说明:
 #   - 用 MPEG-TS 封装而非裸 RTP，VLC/ffplay 可直接播放，兼容性最好
+#   - TCP 模式(板作服务端)可绕开 Windows 入站防火墙
 #   - 跑之前请确认检测程序(pipe 模式)未占用 /dev/video0
 set -e
 
@@ -54,8 +56,8 @@ if [ "$PC_IP" = "tcp" ]; then
   exec gst-launch-1.0 -e \
     v4l2src device=/dev/video0 ! \
     video/x-raw,format=NV12,width=$W,height=$H,framerate=$FPS/1 ! \
-    mpph264enc header-mode=1 ! h264parse config-interval=1 ! mpegtsmux ! \
-    tcpserversink host=0.0.0.0 port=$PORT
+    mpph264enc header-mode=1 gop=15 ! h264parse config-interval=1 ! mpegtsmux ! \
+    tcpserversink host=0.0.0.0 port=$PORT sync=false
 fi
 
 BR_KBPS=${3:-}         # 可选：目标码率(kbps)，留空=用编码器默认
@@ -81,6 +83,6 @@ echo "== PC 端用 VLC 打开 udp://@:${PORT}  (Ctrl+C 结束推流) =="
 exec gst-launch-1.0 -e \
   v4l2src device=/dev/video0 ! \
   video/x-raw,format=NV12,width=$W,height=$H,framerate=$FPS/1 ! \
-  mpph264enc header-mode=1 $ENC_OPTS ! \
+  mpph264enc header-mode=1 gop=15 $ENC_OPTS ! \
   h264parse config-interval=1 ! mpegtsmux ! \
-  udpsink host=$PC_IP port=$PORT
+  udpsink host=$PC_IP port=$PORT sync=false
