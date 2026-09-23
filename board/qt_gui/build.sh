@@ -23,14 +23,14 @@ if [ ! -f "$S/lib/libQt5Widgets.so" ]; then
     echo "找不到 Qt5 库: $S/lib/libQt5Widgets.so（SDK staging 里没有 Qt 开发文件？）"; exit 1
 fi
 
-QT_INC="-I$S/include/qt5 -I$S/include/qt5/QtCore -I$S/include/qt5/QtGui -I$S/include/qt5/QtWidgets"
-QT_LIB="$S/lib/libQt5Widgets.so $S/lib/libQt5Gui.so $S/lib/libQt5Core.so"
+QT_INC="-I$S/include/qt5 -I$S/include/qt5/QtCore -I$S/include/qt5/QtGui -I$S/include/qt5/QtWidgets -I$S/include/qt5/QtNetwork"
+QT_LIB="$S/lib/libQt5Widgets.so $S/lib/libQt5Gui.so $S/lib/libQt5Core.so $S/lib/libQt5Network.so"
 # GStreamer：拉流 + mppvideodec 硬解（同样不能把 $S/lib 加进 -L）
 GST_INC="-I$S/include/gstreamer-1.0 -I$S/include/glib-2.0 -I$S/lib/glib-2.0/include"
 GST_LIB="$S/lib/libgstreamer-1.0.so $S/lib/libgstapp-1.0.so $S/lib/libgobject-2.0.so $S/lib/libglib-2.0.so"
 LDFLAGS="-Wl,-rpath-link,$S/lib"
 
-SRCS="main.cpp gstsource.cpp"
+SRCS="main.cpp gstsource.cpp statelink.cpp"
 
 echo "== 编译 $OUT =="
 # -fPIC：Qt 头文件里可能有内联的 PIC 相关代码；-O2：性能验证才有意义

@@ -38,8 +38,11 @@
 ## 3. 分步计划
 
 - [x] **Step 1 最小验证**：全屏测试图 → 确认能显示、方向/分辨率、CPU 刷新帧率
-- [x] **Step 2 接视频**（当前）：`gstsource.*` —— 拉流 + `mppvideodec` 硬解 → `QImage` → 画到窗口
-- [ ] Step 3 界面：ROI/检测框叠加、事件列表、参数页
+- [x] **Step 2 接视频**：`gstsource.*` —— 拉流 + `mppvideodec` 硬解 → `QImage` → 画到窗口
+- [x] **Step 3a 横屏布局 + 叠加显示**（当前）：`statelink.*` 接状态通道；
+      左侧视频区（ROI 黄框 + 人/车检测框 + 置信度标签）+ 右信息栏（连接状态/帧率/统计/参数/事件列表）
+- [ ] Step 3b 触摸调 ROI（拖动 → 上行命令 → 主程序热更新）
+- [ ] Step 3c 参数页 / 按钮（把运行时控制台搬到屏上）
 
 ## 4. 编译与运行
 
@@ -125,3 +128,39 @@ QT_QPA_PLATFORM=wayland ./rkqttest
 - **不用 Qt 信号槽跳线程**（需 moc）：用 mutex + QTimer 轮询，效果一样
 - 运行时会打印：`解码收帧 / 显示 / 顶掉` 三个计数 —— “顶掉”持续增长说明 UI 跟不上，
   可把 `takeFrame` 的 33ms 调大、或把解码输出尺寸再调小
+
+## 6. 状态通道（Step 3a，用于叠加显示）
+
+叠加数据（ROI/检测框/统计）不走视频流，而是走主程序开的一条**本机文本通道**：
+
+```
+主程序 StatLink（服务端 127.0.0.1:9100）──每100ms一行JSON──> 板端 Qt StateLink（QTcpSocket）
+   {"type":"STATE","fw":1280,"fh":720,"roi":[0,0,1280,720],"stay":3,...
+    "fps":16.2,"events":2,"alarms":1,"pushed":584,"ev":"ALARM","es":3061,
+    "dets":[{"c":0,"x1":923,"y1":245,"x2":1280,"y2":433,"p":0.53}]}
+```
+
+为什么单开一条而不是复用上报 PC 的 9000：那条是“**主程序主动连 PC**”（方向相反），
+且状态是高频小数据，不该和事件上报混在一起。
+
+- 主程序侧：`src/output/statlink.hpp/.cpp`（`STAT_PORT=0` 可关）
+- Qt 侧：`statelink.hpp/.cpp`（QJsonDocument 解析，断线每秒重连）
+- 叠加坐标映射：`视频区rect = fitAspect(左区, 16:9)`，再按 `视频区宽 / fw` 缩放 ROI/检测框
+- 上行命令的接收队列已在主程序侧预留（`StatLink::takeCommand`）→ Step 3b 直接用
+
+## 7. 横屏
+
+板子是 **MIPI DSI 竖屏（`card0-DSI-1` 模式 `1080x1920`）**，要横屏用只能旋转输出：
+
+```bash
+# 板上，追加到 /etc/xdg/weston/weston.ini 末尾
+[output]
+name=DSI-1
+transform=rotate-90      # 方向不对就换 rotate-270
+
+killall weston           # 注意：weston 不会自动重启，需 reboot
+reboot
+```
+
+旋转在 weston 层完成，**Qt 应用代码不用改**（窗口会自动变成 1280x720）。
+回滚：删掉 `[output]` 那段再 reboot。
