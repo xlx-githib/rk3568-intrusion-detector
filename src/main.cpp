@@ -22,6 +22,7 @@
 #include "business/roi_monitor.hpp"
 #include "capture/v4l2_camera.hpp"
 #include "output/reporter.hpp"
+#include "output/streamer.hpp"
 
 using namespace std;
 
@@ -312,6 +313,23 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
         if (cam.getFrame(pv, 1000)) draw_roi_and_save("shots/roi_preview.ppm", pv, roi);
     }
 
+    // ---- 可选：H.264 推流 ----
+    // 用环境变量开启，不占命令行参数位（不改 argv 索引 → 不会影响已有的参数解析）
+    //   STREAM_PORT=5000  监听端口（不设/为 0 = 关）
+    //   STREAM_BPS=2000   目标码率 kbps
+    //   STREAM_GOP=15     I 帧间隔
+    Streamer strm;
+    int stream_port = 0, stream_bps = 2000, stream_gop = 15;
+    if (const char* v = getenv("STREAM_PORT")) stream_port = atoi(v);
+    if (const char* v = getenv("STREAM_BPS"))  stream_bps  = atoi(v);
+    if (const char* v = getenv("STREAM_GOP"))  stream_gop  = atoi(v);
+    if (stream_port > 0) {
+        cam.setKeepNv12(true);   // 采集层多留一份 NV12 给硬编码器
+        if (strm.start(cam.width(), cam.height(), 30, stream_port, stream_bps, stream_gop))
+            printf("[pipe] PC 侧播放: ffplay -fflags nobuffer -flags low_delay -probesize 32 "
+                   "-analyzeduration 0 -framedrop -f mpegts tcp://<板IP>:%d\n", stream_port);
+    }
+
     Reporter rep;
     rep.init(report_ip && report_ip[0], report_ip ? report_ip : "", report_port);
     if (report_ip && report_ip[0]) rep.connect();
@@ -350,7 +368,7 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
                            "[status] pipe 运行 %.0fs · 帧率 %.1f fps\n"
                            "  ROI=(%d,%d,%d,%d) stay=%ds leave=%d conf=%.2f nms=%.2f log=%d report=%s\n"
                            "  累计 infer=%d 事件=%d 告警=%d | 队列 raw=%zu res=%zu ev=%zu\n"
-                           "  上报 %s:%d 连接=%s",
+                           "  上报 %s:%d 连接=%s | 推流 %s 成功=%llu 丢=%llu",
                            dts, dts > 0 ? nInfer.load() / dts : 0.0,
                            rt.roi_x.load(), rt.roi_y.load(), rt.roi_w.load(), rt.roi_h.load(),
                            rt.stay_sec.load(), rt.leave_confirm.load(),
@@ -359,7 +377,10 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
                            nInfer.load(), nEvent.load(), nAlarm.load(),
                            rawQ.size(), resQ.size(), evQ.size(),
                            (report_ip && report_ip[0]) ? report_ip : "(off)", report_port,
-                           rep.connected() ? "yes" : "no");
+                           rep.connected() ? "yes" : "no",
+                           strm.running() ? "on" : "off",
+                           (unsigned long long)strm.pushed(),
+                           (unsigned long long)strm.dropped());
                   return string(b);
               },
               [&](int n) { return evlog.dump(n); },
@@ -371,6 +392,10 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
             FramePtr f;
             if (!cam.getFrame(f, 1000)) continue;
             got++;
+            // 推流与推理解耦：这里每帧都推（包括因队列满而没进推理的帧）
+            //  → 视频流畅、检测依旧保实时，两个目标不互相掣肘
+            if (strm.running() && !f->nv12.empty())
+                strm.push(f->nv12.data(), f->nv12.size(), f->pts_us);
             rawQ.push(f);
         }
         rawQ.push(nullptr);                             // EOF 标记
@@ -470,6 +495,7 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
 
     capT.join(); infT.join(); bizT.join(); outT.join();
     con.stop();
+    strm.stop();          // 停推流（发 EOS，已连上的播放器正常收尾）
     rep.disconnect();
     auto t1 = chrono::steady_clock::now();
     double dt = chrono::duration<double>(t1 - t0).count();

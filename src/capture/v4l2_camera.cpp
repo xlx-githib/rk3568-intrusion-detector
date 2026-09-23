@@ -62,7 +62,10 @@ bool V4l2Camera::open(const string& dev, uint32_t w, uint32_t h) {
                               MAP_SHARED, fd_, planes[0].m.mem_offset);
         if (bufs_[i].start == MAP_FAILED) { perror("[v4l2] mmap"); bufs_[i].start = nullptr; return false; }
     }
-    printf("[v4l2] open %s %ux%u NV12, %u buffers\n", dev.c_str(), w_, h_, nbufs_);
+    // 打印 plane 长度：NV12 期望 w*h*3/2，若驱动有行对齐 padding 这里会不一致
+    // （1280/720 都是 16 的倍数，实测相等；换分辨率若出现花屏，需改成按 bytesperline 逐行拷）
+    printf("[v4l2] open %s %ux%u NV12, %u buffers (plane0=%zu bytes, 期望 %zu)\n",
+           dev.c_str(), w_, h_, nbufs_, bufs_[0].length, size_t(w_) * h_ * 3 / 2);
     return true;
 }
 
@@ -101,6 +104,11 @@ bool V4l2Camera::getFrame(FramePtr& out, int timeout_ms) {
     f->pts_us = now_us();
     f->data.resize(size_t(w_) * h_ * 3);
     nv12_to_rgb(bufs_[buf.index].start, f->data.data());
+    // 推流要的不是 RGB 而是原始 NV12 → 多留一份（1.38MB @720p，memcpy 亚毫秒级）
+    if (keep_nv12_) {
+        const uint8_t* p = (const uint8_t*)bufs_[buf.index].start;
+        f->nv12.assign(p, p + size_t(w_) * h_ * 3 / 2);
+    }
 
     // 归还缓冲
     if (xioctl(fd_, VIDIOC_QBUF, &buf) < 0) { perror("[v4l2] QBUF2"); }

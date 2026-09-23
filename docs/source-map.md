@@ -26,11 +26,12 @@ rk3568-intrusion-detector/
 │  │  ├─ frame.hpp             # Frame{width,height,fmt,pts_us,data} / FramePtr / FrameQueue
 │  │  ├─ block_queue.hpp       # 模板有界阻塞队列(满丢最旧)，流水线解耦核心
 │  │  ├─ config.hpp/.cpp       # key=value 配置解析(# 注释)
+│  │  ├─ console.hpp/.cpp      # 运行时控制台(stdin 命令) + RtParams 原子参数热更新 + 事件环形日志
 │  │  └─ log.hpp               # 极简日志 LOG_I/W/E(带时间戳)
 │  ├─ capture/v4l2_camera.hpp/.cpp   # Multiplanar NV12 + mmap(4 buffer) + poll + NV12→RGB888(BT.601)
 │  ├─ infer/rknn_engine.hpp/.cpp     # RKNN 加载/查询/推理 + letterbox + 三尺度解码 + NMS + 白名单
 │  ├─ business/roi_monitor.hpp/.cpp  # ROI 判定 + 事件状态机 + 离开去抖（业务核心）
-│  └─ output/reporter.hpp/.cpp       # TCP 逐行 JSON 上报 + base64 缩略图 + 断线重连
+│  └─ output/                  # reporter.hpp/.cpp: TCP JSON 上报+缩略图；streamer.hpp/.cpp: H.264 推流
 ├─ host/
 │  ├─ receiver.py              # 最简命令行接收(调试用)
 │  └─ qt_gui/                  # Qt 5.11 上位机(.pro/.h/main.cpp)
@@ -41,6 +42,7 @@ rk3568-intrusion-detector/
 └─ docs/
    ├─ architecture.md          # 设计文档(调用链/线程模型/状态机)
    ├─ source-map.md            # ← 本文件：实现视角的源码地图与流程
+   ├─ streaming.md             # H.264 推流：架构/编译开关/低延迟播放/关键参数/踩坑
    ├─ study/                   # 01~04 概念/代码导读
    └─ devlog/                  # 每日开发日志
 ```
@@ -55,6 +57,8 @@ rk3568-intrusion-detector/
 | `capture/v4l2_camera.*` | 采集一帧 | `open(dev,w,h)` / `start` / `getFrame(FramePtr&,timeout_ms)` / `close` | Multiplanar NV12 + mmap 4 缓冲 + poll 超时；转 RGB888 并打 `pts_us` |
 | `infer/rknn_engine.*` | 目标检测 | `init(model, YoloParams, watch_cls)` / `infer(FramePtr, vector<DetObject>&)` | RKNN 六连；letterbox；**want_float=1 + fp 解码**；三尺度(strides 8/16/32)+NMS+白名单(person/car) |
 | `business/roi_monitor.*` | ROI 事件 | `configure(roi, stay_sec, watch_cls, leave_confirm_frames)` / `feed(dets, now_us)->vector<Event>` | 状态机 IDLE→INSIDE→ALARMED；判定用**检测框底部中心**；离开去抖见下 |
+| `common/console.*` | 运行时调参 | `RtParams` / `EventLog` / `Console::start` | 原子参数 + `version` 号热更新：控制路径只写、业务线程比对后统一应用 |
+| `output/streamer.*` | H.264 推流 | `start(w,h,fps,port,bps,gop)` / `push(nv12,bytes,pts_us)` / `stop` | `appsrc block=false`+3 帧上限→满即丢帧不阻塞采集；`header-mode=1` 才能随时接入(详 `docs/streaming.md`) |
 | `output/reporter.*` | 上报 | `init/connect/report/reportImg/reportPreview` | TCP 逐行 JSON；大消息**循环发送**；断线自动重连 |
 | `main.cpp` | 组装与运行 | 4 种模式 + `run_pipe` 四线程 | 见下节 |
 

@@ -28,6 +28,10 @@ struct Frame {
     PixelFormat fmt = PixelFormat::BGR888;
     uint64_t pts_us = 0;   // 采集时刻（微秒）
     vector<uint8_t> data;
+    // 原始 NV12（w*h*3/2 字节）。仅当开启 H.264 推流时由采集层填充
+    // （见 V4l2Camera::setKeepNv12）：硬编码器只吃 NV12，而 data 是给推理用的 RGB888。
+    // 不推流时这里始终为空 → 不白付 1.4MB/帧 的额外拷贝。
+    vector<uint8_t> nv12;
 };
 using FramePtr = shared_ptr<Frame>;
 

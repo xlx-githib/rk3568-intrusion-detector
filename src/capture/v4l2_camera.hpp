@@ -16,7 +16,14 @@ public:
     bool start();   // 入队所有缓冲并开始采集
     void stop();
     // 取回一帧（阻塞 timeout_ms；成功时 out 为 RGB888，含 pts_us）
+    // keep_nv12_ 为真时，同时把原始 NV12 拷进 Frame::nv12（供 H.264 硬编码使用）
     bool getFrame(FramePtr& out, int timeout_ms = 1000);
+
+    // 是否随帧多留一份 NV12（默认关：不推流就不付这份拷贝开销）
+    void setKeepNv12(bool on) { keep_nv12_ = on; }
+    // 协商后的实际采集尺寸（open 之后才有效：驱动可能改动请求的 w/h）
+    uint32_t width() const { return w_; }
+    uint32_t height() const { return h_; }
 
 private:
     struct Buf { void* start = nullptr; size_t length = 0; };
@@ -26,6 +33,7 @@ private:
     unsigned nbufs_ = 0;
     Buf bufs_[8];
     bool started_ = false;
+    bool keep_nv12_ = false;
 
     // NV12 -> RGB888 (BT.601)
     void nv12_to_rgb(const void* nv12, uint8_t* rgb) const;
