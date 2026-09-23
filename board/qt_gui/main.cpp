@@ -13,6 +13,7 @@
 #include <QApplication>
 #include <QElapsedTimer>
 #include <QFont>
+#include <QFontInfo>
 #include <QPainter>
 #include <QTimer>
 #include <QWidget>
@@ -74,9 +75,12 @@ protected:
         int x = int((long(tick_) * 12) % (W - bw));
         p.fillRect(x, H * 2 / 3, bw, bw, QColor(0, 255, 120));
 
-        // ④ 文字（若板端没装字体则不会显示 —— 属正常，看色条/方块即可）
+        // ④ 文字（显式指定字体族：板端字体很全(/usr/share/fonts/liberation|dejavu|noto|source-han-sans-cn)，
+        //    但不指定族名时 Qt 的 fallback 会失败 → load glyph failed err=24，一个字都画不出来）
         p.setPen(Qt::white);
-        QFont f = p.font();
+        QFont f(QStringLiteral("Liberation Sans"));
+        if (!QFontInfo(f).family().contains(QStringLiteral("Liberation"), Qt::CaseInsensitive))
+            f = QFont(QStringLiteral("DejaVu Sans"));     // 兜底：换 DejaVu
         f.setPointSize(34);
         f.setBold(true);
         p.setFont(f);
