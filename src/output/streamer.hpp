@@ -10,6 +10,7 @@
 //  4) 未编译推流功能（ENABLE_STREAM 未开）时是空实现，调用方无需任何 #ifdef。
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 
 // 标准库名字逐个引入(头文件不用 using namespace std，避免污染包含者)
