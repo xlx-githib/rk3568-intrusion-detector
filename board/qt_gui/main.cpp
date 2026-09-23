@@ -39,12 +39,24 @@ namespace {
 // 信号处理器里只能调 async-signal-safe 的函数（printf/quit 都不算）。
 // 之前只设标志位、靠 QTimer 去查，实测 ^C 退不出来 → 直接 _exit()，简单可靠。
 void on_sigint(int) { _exit(0); }
+
+// 环境变量开关（非空且不是 "0" 即为开）
+bool envOn(const char* key) {
+    const char* v = getenv(key);
+    return v && v[0] && v[0] != '0';
+}
 }  // namespace
 
 class MainWindow : public QWidget {
 public:
     MainWindow(GstSource* src, StateLink* link, uint16_t port)
         : src_(src), link_(link), port_(port) {
+        // 诊断开关（定位“UI 为什么慢”用，效果看 README 第 8 节）：
+        //   SKIP_VIDEO=1    不画视频，只画背景+右栏  → 看 fps 跳不跳
+        //   SKIP_SIDEBAR=1  不画右栏                → 看右栏成本多少
+        skip_video_ = envOn("SKIP_VIDEO");
+        skip_side_ = envOn("SKIP_SIDEBAR");
+        printf("[qt] 诊断: SKIP_VIDEO=%d SKIP_SIDEBAR=%d\n", skip_video_ ? 1 : 0, skip_side_ ? 1 : 0);
         et_.start();
         // 10ms 轮询：视频取到新帧 或 状态有更新 → 重绘；两者都没变就不画（省 CPU）
         auto* t = new QTimer(this);
@@ -88,7 +100,9 @@ protected:
         const QRect vr = fitAspect(video_box, 16, 9);        // 视频区保持 16:9
 
         p.fillRect(vr, Qt::black);
-        if (!frame_.isNull()) {
+        if (skip_video_) {
+            p.fillRect(vr, QColor(45, 45, 60));      // 诊断：不画视频（但占位面积一样大）
+        } else if (!frame_.isNull()) {
             // ⚠️ **别开 SmoothPixmapTransform**：在 1920x1080 屏上把 640x360 平滑放大到 ~1500x850，
             //    每帧要双线性插值 127 万像素，实测 UI 直接从 31fps 掉到 13fps（顶掉 56%）。
             //    最近邻放大粗糙一点，但快好几倍；画面本身分辨率不高，平滑反而看不出好处。
@@ -104,14 +118,16 @@ protected:
 
         // ---- 右栏：内容 100ms 才变一次，缓存成 pixmap，每帧只做一次 blit ----
         // （之前每帧重画几十行文字+事件列表，光字形渲染就很贵）
-        if (side_dirty_ || side_cache_.size() != side.size()) {
-            side_cache_ = QPixmap(side.size());
-            side_cache_.fill(QColor(20, 22, 28));
-            QPainter sp(&side_cache_);
-            drawSidebar(sp, QRect(0, 0, side.width(), side.height()));
-            side_dirty_ = false;
+        if (!skip_side_) {
+            if (side_dirty_ || side_cache_.size() != side.size()) {
+                side_cache_ = QPixmap(side.size());
+                side_cache_.fill(QColor(20, 22, 28));
+                QPainter sp(&side_cache_);
+                drawSidebar(sp, QRect(0, 0, side.width(), side.height()));
+                side_dirty_ = false;
+            }
+            p.drawPixmap(side.topLeft(), side_cache_);
         }
-        p.drawPixmap(side.topLeft(), side_cache_);
     }
 
 private:
@@ -274,6 +290,8 @@ private:
     QImage frame_;
     QPixmap side_cache_;            // 右栏缓存（内容变化时才重画）
     bool side_dirty_ = true;
+    bool skip_video_ = false;       // 诊断开关
+    bool skip_side_ = false;
     QVector<QString> ev_hist_;      // 最近事件文本
     QString last_ev_;               // 去重用：上次记录的“最近事件”
     unsigned long long last_ev_stay_ = 0;
