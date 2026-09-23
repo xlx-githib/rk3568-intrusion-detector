@@ -43,7 +43,18 @@ set(SRC
 # 板端原生编译开启：-DENABLE_STREAM=ON（此时走本机 pkg-config）
 option(ENABLE_STREAM "启用 GStreamer H.264 推流" OFF)
 if(ENABLE_STREAM AND GSTREAMER_ROOT)
-    link_directories(${GSTREAMER_ROOT}/lib)   # 用 link_directories 而非 target_link_directories(需 CMake 3.13+)
+    # ⚠️ 千万不要把 ${GSTREAMER_ROOT}/lib 加进 -L 搜索路径！
+    #    staging/usr/lib 里有 glibc 的链接脚本 libc.so，内容是**板子上的绝对路径**
+    #    （GROUP ( /lib64/libc.so.6 ... )）；一旦 -L 命中它，ld 会去宿主根目录找
+    #    /lib64/libc.so.6 → 报 “找不到 /lib64/libc.so.6 / libc_nonshared.a / ld-linux-aarch64.so.1”。
+    #    正确做法：用绝对路径点名链接需要的库，另用 -rpath-link 解析它们依赖的 SONAME
+    #    （rpath-link 只匹配 libc.so.6 这种带版本的真实文件名，不会命中 libc.so 脚本）。
+    set(GST_LIBS
+        ${GSTREAMER_ROOT}/lib/libgstreamer-1.0.so
+        ${GSTREAMER_ROOT}/lib/libgstapp-1.0.so
+        ${GSTREAMER_ROOT}/lib/libgstbase-1.0.so
+        ${GSTREAMER_ROOT}/lib/libgobject-2.0.so
+        ${GSTREAMER_ROOT}/lib/libglib-2.0.so)
 endif()
 
 add_executable(rk3568_intrusion ${SRC})
@@ -69,8 +80,10 @@ if(ENABLE_STREAM)
             ${GSTREAMER_ROOT}/lib/glib-2.0/include   # glibconfig.h 在这里
             ${GSTREAMER_ROOT}/include                # ffi.h 等
         )
-        target_link_libraries(rk3568_intrusion PRIVATE
-            gstreamer-1.0 gstapp-1.0 gstbase-1.0 gobject-2.0 glib-2.0)
+        target_link_libraries(rk3568_intrusion PRIVATE ${GST_LIBS})
+        # 让 ld 能在 staging 里找到这些库自己依赖的 .so.0（否则报 “not found, needed by ...” 警告）
+        set_target_properties(rk3568_intrusion PROPERTIES
+            LINK_FLAGS "-Wl,-rpath-link,${GSTREAMER_ROOT}/lib")
     else()
         message(STATUS "推流: 用本机 pkg-config")
         find_package(PkgConfig REQUIRED)
