@@ -459,6 +459,12 @@ static int run_pipe(const char* model, const RoiRect& roi, int stay_sec,
                 em->ev = e; em->frame = io->frame; em->dets = io->dets;
                 evQ.push(em);
             }
+            // 板端 Qt 界面发来的控制命令（触摸调 ROI 等）→ 转交运行时控制台执行。
+            // 这样“屏幕拖动”和“终端敲命令”走的是同一条解析与热更新链路，不用写第二份逻辑。
+            {
+                string cmd;
+                while (stat.takeCommand(cmd)) con.submit(cmd);
+            }
             // 每 100ms 把状态推给板端 Qt（ROI/检测框/统计/最近事件）
             // 注意快照是值拷贝，拷完就撒手：不阻塞数据路径，也不和 UI 争锁
             if (now >= lastStatUs + 100000ULL) {

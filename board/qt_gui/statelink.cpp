@@ -29,6 +29,13 @@ void StateLink::start(uint16_t port) {
     sock_.connectToHost(QStringLiteral("127.0.0.1"), port_);
 }
 
+bool StateLink::sendCommand(const QString& cmd) {
+    if (sock_.state() != QAbstractSocket::ConnectedState) return false;
+    QByteArray line = cmd.toUtf8();
+    if (!line.endsWith('\n')) line += '\n';      // 协议是“一行一条”
+    return sock_.write(line) == line.size();
+}
+
 void StateLink::onReadyRead() {
     buf_ += sock_.readAll();
     int pos;

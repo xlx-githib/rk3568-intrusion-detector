@@ -69,10 +69,35 @@ void Console::stop() {
     if (th_.joinable()) th_.join();
 }
 
+// 外部线程投递命令：只入队，不直接改状态 —— 保证所有命令都在控制台线程里串行执行，
+// 这样 applyKv/doSave 这些非线程安全的逻辑就不用加锁。
+void Console::submit(const string& line) {
+    string s = line;
+    trim(s);
+    if (s.empty()) return;
+    lock_guard<mutex> lk(ext_m_);
+    if (ext_q_.size() < 16) ext_q_.push_back(s);   // 有界：防止对端刷爆内存
+}
+
 void Console::loop() {
     printf("[con] 运行时控制台就绪：输入 help 查看命令\n");
     char buf[256];
     while (running_.load()) {
+        // ① 优先处理外部投递的命令（来自板端 Qt 触摸操作等）
+        {
+            string ext;
+            bool has = false;
+            {
+                lock_guard<mutex> lk(ext_m_);
+                if (!ext_q_.empty()) { ext = ext_q_.front(); ext_q_.pop_front(); has = true; }
+            }
+            if (has) {
+                printf("[con] 外部命令: %s\n", ext.c_str());
+                onLine(ext);
+                continue;
+            }
+        }
+        // ② stdin（保留终端交互）
         struct pollfd pfd;
         pfd.fd = 0;            // stdin
         pfd.events = POLLIN;

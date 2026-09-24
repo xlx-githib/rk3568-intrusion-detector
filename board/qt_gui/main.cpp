@@ -4,13 +4,17 @@
 // Step 2（完成）：视频接入 —— tcpclientsrc ! tsdemux ! h264parse ! mppvideodec(硬解)
 //                        ! videoscale ! videoconvert ! video/x-raw,RGB ! appsink
 //                        → 最新一帧 → QImage → 画到视频区
-// Step 3a（本文件当前版本）：横屏布局 + 叠加显示
+// Step 3a（完成）：横屏布局 + 叠加显示
 //   - 左：视频区（16:9，ROI 黄框 + 人/车检测框叠加）
 //   - 右：信息栏（连接状态/帧率/统计/参数）+ 最近事件列表
 //   数据来源：主程序的 127.0.0.1:9100 状态通道（StateLink，JSON 行）
+// Step 3b（本文件当前版本）：**触摸拖动调 ROI**
+//   - 视频区 ROI 框四角有拖拽柄：拖角=缩放，拖框内=整体移动
+//   - 拖动中本地实时显示（跟手），**松手才发一条 `roi x y w h` 给主程序**
+//   - 主程序交给运行时控制台执行 → 与应用命令复用同一套热更新链路
 //
 // 编译：bash build.sh
-// 运行：export XDG_RUNTIME_DIR=/run && QT_QPA_PLATFORM=wayland ./rkqttest [视频端口=5000] [状态端口=9100]
+// 运行：export XDG_RUNTIME_DIR=/run && QT_QPA_PLATFORM=wayland ./rkqttest [视频端口=5000] [状态端口=9100] [解码宽度=640]
 //
 // ⚠️ 本工程刻意不使用 Q_OBJECT（不用自定义 signal/slot，一律 lambda 连接），
 //    这样编译**不需要 moc** —— SDK 里没编 host qmake/moc。
@@ -20,10 +24,13 @@
 #include <QFontInfo>
 #include <QFontMetrics>
 #include <QImage>
+#include <QLineF>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
 #include <QTime>
 #include <QTimer>
+#include <QTouchEvent>
 #include <QVector>
 #include <QWidget>
 
@@ -57,6 +64,7 @@ public:
         skip_video_ = envOn("SKIP_VIDEO");
         skip_side_ = envOn("SKIP_SIDEBAR");
         printf("[qt] 诊断: SKIP_VIDEO=%d SKIP_SIDEBAR=%d\n", skip_video_ ? 1 : 0, skip_side_ ? 1 : 0);
+        setAttribute(Qt::WA_AcceptTouchEvents);   // 收 QTouchEvent（否则触摸只被合成为鼠标事件）
         et_.start();
         // 10ms 轮询：视频取到新帧 或 状态有更新 → 重绘；两者都没变就不画（省 CPU）
         auto* t = new QTimer(this);
@@ -95,9 +103,8 @@ protected:
 
         // ---- 横屏布局：左视频、右信息栏 ----
         const int sbw = qBound(230, W / 4, 400);             // 右栏宽（自适应）
-        const QRect video_box(8, 8, W - sbw - 16, H - 16);
         const QRect side(W - sbw, 0, sbw, H);
-        const QRect vr = fitAspect(video_box, 16, 9);        // 视频区保持 16:9
+        const QRect vr = videoRect();                        // 与事件处理共用同一套算法
 
         p.fillRect(vr, Qt::black);
         if (skip_video_) {
@@ -128,6 +135,28 @@ protected:
             }
             p.drawPixmap(side.topLeft(), side_cache_);
         }
+    }
+
+    // ---------------- 输入：鼠标 + 触摸 → 同一套拖动逻辑 ----------------
+    // Wayland 下 weston 一般会把单指触摸合成成鼠标事件，但不同版本行为不一，
+    // 所以两条路都接；Touch 处理后 return true 吞掉，避免再被合成为鼠标事件而重复处理
+    void mousePressEvent(QMouseEvent* e) override { onPress(e->localPos()); }
+    void mouseMoveEvent(QMouseEvent* e) override { onMove(e->localPos()); }
+    void mouseReleaseEvent(QMouseEvent*) override { onRelease(); }
+
+    bool event(QEvent* e) override {
+        if (e->type() == QEvent::TouchBegin || e->type() == QEvent::TouchUpdate ||
+            e->type() == QEvent::TouchEnd) {
+            QTouchEvent* te = static_cast<QTouchEvent*>(e);
+            const QList<QTouchEvent::TouchPoint>& pts = te->touchPoints();
+            if (pts.isEmpty()) return true;
+            const QPointF pos = pts.first().pos();
+            if (e->type() == QEvent::TouchBegin)       onPress(pos);
+            else if (e->type() == QEvent::TouchUpdate) onMove(pos);
+            else                                       onRelease();
+            return true;
+        }
+        return QWidget::event(e);
     }
 
 private:
@@ -172,13 +201,43 @@ private:
         const double sx = double(vr.width()) / st.fw;
         const double sy = double(vr.height()) / st.fh;
 
-        // ---- ROI：黄色淡填充 + 边框 ----
-        if (st.roi_w > 0 && st.roi_h > 0) {
-            const QRectF r(vr.x() + st.roi_x * sx, vr.y() + st.roi_y * sy,
-                           st.roi_w * sx, st.roi_h * sy);
-            p.fillRect(r, QColor(255, 220, 0, 26));
-            p.setPen(QPen(QColor(255, 220, 0), 3));
+        // ---- ROI：黄色淡填充 + 边框 + 四角拖拽柄 ----
+        // 拖动中优先显示“本地那份”（跟手），松手后才交回主程序回报的状态
+        const bool editing = (drag_ != DRAG_NONE) && roi_edit_valid_;
+        const QRectF roi = editing ? roi_edit_
+                                   : QRectF(st.roi_x, st.roi_y, st.roi_w, st.roi_h);
+        if (roi.width() > 0 && roi.height() > 0) {
+            const QColor rc = editing ? QColor(255, 160, 0) : QColor(255, 220, 0);
+            const QRectF r(vr.x() + roi.x() * sx, vr.y() + roi.y() * sy,
+                           roi.width() * sx, roi.height() * sy);
+            p.fillRect(r, QColor(rc.red(), rc.green(), rc.blue(), 26));
+            p.setPen(QPen(rc, editing ? 4 : 3));
             p.drawRect(r);
+
+            // 四角拖拽柄：既是“可以拖”的提示，也是触摸目标（拾取热区更大，见 onPress）
+            p.setPen(Qt::NoPen);
+            p.setBrush(rc);
+            const QPointF cs[4] = {r.topLeft(), r.topRight(), r.bottomLeft(), r.bottomRight()};
+            for (const QPointF& c : cs)
+                p.drawRect(QRectF(c.x() - 7, c.y() - 7, 14, 14));
+            p.setBrush(Qt::NoBrush);
+
+            // 拖动中实时显示数值（触摸屏上没有鼠标指针，得让用户看到数字在变）
+            if (editing) {
+                p.setFont(fontFor(16));
+                const QString tip = QStringLiteral("ROI %1,%2  %3x%4   松手生效")
+                    .arg(int(roi.x())).arg(int(roi.y()))
+                    .arg(int(roi.width())).arg(int(roi.height()));
+                const QFontMetrics fm(p.font());
+                const int tw = fm.horizontalAdvance(tip) + 18;
+                QRect t(int(r.x()), int(r.y()) - fm.height() - 10, tw, fm.height() + 10);
+                if (t.top() < vr.top()) t.moveTop(int(r.bottom()) + 10);   // 上方放不下就放框下面
+                if (t.right() > vr.right()) t.moveRight(vr.right());
+                if (t.left() < vr.left()) t.moveLeft(vr.left());
+                p.fillRect(t, QColor(255, 160, 0, 235));
+                p.setPen(Qt::black);
+                p.drawText(t, Qt::AlignCenter, tip);
+            }
         }
 
         // ---- 检测框：person 红 / car 青 ----
@@ -256,6 +315,8 @@ private:
 
         line(QStringLiteral("ROI"), QStringLiteral("%1,%2 %3x%4")
                  .arg(st.roi_x).arg(st.roi_y).arg(st.roi_w).arg(st.roi_h));
+        if (roi_edit_valid_ && drag_ != DRAG_NONE)     // 手指正压在屏上拖 → 给个明确反馈
+            line(QStringLiteral("ROI 编辑中"), QStringLiteral("松手生效"), QColor(255, 180, 60));
         line(QStringLiteral("停留阈值"), QStringLiteral("%1 s").arg(st.stay_sec));
         line(QStringLiteral("离开去抖"), QStringLiteral("%1 帧").arg(st.leave_confirm));
         line(QStringLiteral("conf/nms"),
@@ -294,9 +355,129 @@ private:
         while (ev_hist_.size() > 10) ev_hist_.removeLast();
     }
 
+    // ---------------- 拖动交互（触摸调 ROI）----------------
+    enum DragMode { DRAG_NONE, DRAG_MOVE, DRAG_TL, DRAG_TR, DRAG_BL, DRAG_BR };
+
+    // 视频区矩形：paintEvent 与事件处理必须用**同一套算法**，否则“看到的框”和“拖到的位置”对不上
+    QRect videoRect() const {
+        const int sbw = qBound(230, width() / 4, 400);
+        return fitAspect(QRect(8, 8, width() - sbw - 16, height() - 16), 16, 9);
+    }
+
+    // 屏幕坐标 → 视频坐标系（1280x720）
+    QPointF toVideo(const QPointF& screen) const {
+        const QRect vr = videoRect();
+        const BoardState& st = link_->state();
+        if (st.fw <= 0 || st.fh <= 0 || vr.width() <= 0 || vr.height() <= 0) return QPointF();
+        return QPointF((screen.x() - vr.x()) * double(st.fw) / vr.width(),
+                       (screen.y() - vr.y()) * double(st.fh) / vr.height());
+    }
+
+    // 视频坐标 → 屏幕坐标（画手柄、算拾取距离用）
+    QPointF toScreen(const QPointF& v) const {
+        const QRect vr = videoRect();
+        const BoardState& st = link_->state();
+        if (st.fw <= 0 || st.fh <= 0) return QPointF();
+        return QPointF(vr.x() + v.x() * double(vr.width()) / st.fw,
+                       vr.y() + v.y() * double(vr.height()) / st.fh);
+    }
+
+    void onPress(const QPointF& p) {
+        const BoardState& st = link_->state();
+        if (!st.valid || st.fw <= 0 || st.roi_w <= 0) return;
+        if (!roi_edit_valid_) {                 // 每次按下一份新的编辑副本
+            roi_edit_ = QRectF(st.roi_x, st.roi_y, st.roi_w, st.roi_h);
+            roi_edit_valid_ = true;
+        }
+        const QPointF v = toVideo(p);
+
+        // 1) 先判四个角：拾取半径按**屏幕像素**算（手指大约 10mm，热区太小点不中）
+        struct Hit { QPointF pt; DragMode m; };
+        const double pick = 34.0;
+        const Hit cs[4] = {
+            {QPointF(roi_edit_.left(),  roi_edit_.top()),    DRAG_TL},
+            {QPointF(roi_edit_.right(), roi_edit_.top()),    DRAG_TR},
+            {QPointF(roi_edit_.left(),  roi_edit_.bottom()), DRAG_BL},
+            {QPointF(roi_edit_.right(), roi_edit_.bottom()), DRAG_BR},
+        };
+        for (const Hit& c : cs) {
+            if (QLineF(toScreen(c.pt), p).length() <= pick) {
+                drag_ = c.m;
+                drag_v_ = v;
+                side_dirty_ = true;
+                update();
+                return;
+            }
+        }
+        // 2) 框内 → 整体挪动
+        if (roi_edit_.contains(v)) {
+            drag_ = DRAG_MOVE;
+            drag_v_ = v;
+            side_dirty_ = true;
+            update();
+        }
+    }
+
+    void onMove(const QPointF& p) {
+        if (drag_ == DRAG_NONE || !roi_edit_valid_) return;
+        const BoardState& st = link_->state();
+        const QPointF v = toVideo(p);
+        const double dx = v.x() - drag_v_.x();
+        const double dy = v.y() - drag_v_.y();
+        drag_v_ = v;
+
+        QRectF r = roi_edit_;
+        switch (drag_) {
+            case DRAG_MOVE: r.translate(dx, dy); break;
+            case DRAG_TL:   r.setTopLeft(r.topLeft() + QPointF(dx, dy)); break;
+            case DRAG_TR:   r.setTopRight(r.topRight() + QPointF(dx, dy)); break;
+            case DRAG_BL:   r.setBottomLeft(r.bottomLeft() + QPointF(dx, dy)); break;
+            case DRAG_BR:   r.setBottomRight(r.bottomRight() + QPointF(dx, dy)); break;
+            default: break;
+        }
+        // normalized()：拖过头会把矩形拖翻，先规范化；再限到画面内 + 保底最小尺寸
+        r = r.normalized().intersected(QRectF(0, 0, st.fw, st.fh));
+        const double kMin = 60;
+        if (r.width() < kMin)  r.setWidth(kMin);
+        if (r.height() < kMin) r.setHeight(kMin);
+        if (r.right() > st.fw)  r.moveRight(st.fw);
+        if (r.bottom() > st.fh) r.moveBottom(st.fh);
+        if (r.left() < 0)       r.moveLeft(0);
+        if (r.top() < 0)        r.moveTop(0);
+        roi_edit_ = r;
+        side_dirty_ = true;
+        update();
+    }
+
+    void onRelease() {
+        if (drag_ == DRAG_NONE || !roi_edit_valid_) return;
+        const BoardState& st = link_->state();
+        const int x = int(roi_edit_.x() + 0.5);
+        const int y = int(roi_edit_.y() + 0.5);
+        const int w = int(roi_edit_.width() + 0.5);
+        const int h = int(roi_edit_.height() + 0.5);
+        const bool moved = (x != st.roi_x || y != st.roi_y || w != st.roi_w || h != st.roi_h);
+        drag_ = DRAG_NONE;
+        roi_edit_valid_ = false;               // 交回给主程序回报的状态显示
+        side_dirty_ = true;
+        if (moved) {
+            // **松手才发命令**：拖动中每帧都发会把状态通道和主程序刷爆
+            const QString cmd = QStringLiteral("roi %1 %2 %3 %4").arg(x).arg(y).arg(w).arg(h);
+            if (link_->sendCommand(cmd))
+                printf("[qt] 已下发 ROI: %s\n", qPrintable(cmd));
+            else
+                printf("[qt] 状态通道未连接，ROI 命令没发出去（会自动重连）\n");
+        }
+        update();
+    }
+
     GstSource* src_ = nullptr;
     StateLink* link_ = nullptr;
     uint16_t port_ = 0;
+    DragMode drag_ = DRAG_NONE;
+    QRectF roi_edit_;                 // 拖动中的 ROI（视频坐标）
+    bool roi_edit_valid_ = false;
+    QPointF drag_v_;                  // 上一次触摸位置（视频坐标）
     QElapsedTimer et_;
     QImage frame_;
     QPixmap side_cache_;            // 右栏缓存（内容变化时才重画）

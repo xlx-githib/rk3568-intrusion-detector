@@ -41,6 +41,9 @@ public:
 
     const BoardState& state() const { return st_; }
     bool connected() const { return sock_.state() == QAbstractSocket::ConnectedState; }
+    // 向上发一条控制命令（一行文本，如 "roi 300 200 600 400"）——
+    // 主程序侧由 StatLink::takeCommand 取出，交给运行时控制台执行
+    bool sendCommand(const QString& cmd);
     // 有新状态（UI 用它决定要不要重绘）
     bool dirty() const { return dirty_; }
     void clearDirty() { dirty_ = false; }

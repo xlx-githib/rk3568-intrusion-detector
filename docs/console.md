@@ -67,3 +67,30 @@ report_enable
 
 - 新增可调参数：在 `RtParams` 加一个 `atomic<...>` 字段 → `applyKv`/`kvOf` 各加一行 → Business 线程应用处加一行
 - 需要"交互式画 ROI"时，可加 `roi pick` 子命令（配合 `shots/roi_preview.ppm` 预览图）
+
+## 6. 命令来源：终端 + 板端触摸界面（同一条链路）
+
+命令有两个入口，但**只有一套解析与热更新逻辑**：
+
+```
+终端 stdin  ─┐
+             ├─→ Console::loop() 串行处理 ─→ onLine() ─→ RtParams ─→ 工作线程应用
+状态通道    ─┘
+（外部线程 submit）
+```
+
+- 终端：`poll(stdin)` 直接读
+- 外部（板端 Qt 界面触摸调 ROI）：`Console::submit(line)` 入队 → 控制台线程取出执行
+  - 为什么走队列而不是直接执行：`applyKv` / `doSave` 这些逻辑不是线程安全的，
+    **让所有命令都在控制台线程里串行执行**，就完全不用加锁
+  - 队列有界（16 条），防止对端刷爆内存
+
+数据来源：`StatLink`（`127.0.0.1:9100`）的 `takeCommand()`，由 `run_pipe` 的 Business 线程轮询转交：
+
+```cpp
+string cmd;
+while (stat.takeCommand(cmd)) con.submit(cmd);   // 与终端手敲的格式完全一致
+```
+
+所以板上手指拖一下 ROI，效果和你在终端敲 `roi 300 200 600 400` 一模一样。
+这是“**上行走控制、下行走视频**”的双通道设计：视频/状态下沉，控制上行。

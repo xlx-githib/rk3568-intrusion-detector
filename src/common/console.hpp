@@ -54,6 +54,10 @@ public:
                StatusFn status_fn, EventsFn events_fn, atomic<bool>* quit);
     void stop();
 
+    // 外部线程投递一条命令（如板端 Qt 触摸调 ROI），线程安全。
+    // 与终端手敲的命令格式完全一致，复用同一套解析与热更新链路。
+    void submit(const string& line);
+
 private:
     void loop();
     void onLine(const string& line);
@@ -69,4 +73,7 @@ private:
     atomic<bool>* quit_ = nullptr;
     atomic<bool>  running_{false};
     thread        th_;
+
+    mutex         ext_m_;      // 保护外部投递队列
+    deque<string> ext_q_;
 };
