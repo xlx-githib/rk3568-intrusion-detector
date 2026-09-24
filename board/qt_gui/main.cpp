@@ -127,6 +127,7 @@ protected:
         // （之前每帧重画几十行文字+事件列表，光字形渲染就很贵）
         if (!skip_side_) {
             if (side_dirty_ || side_cache_.size() != side.size()) {
+                btns_.clear();                  // 按钮命中区跟右栏缓存一起重建
                 side_cache_ = QPixmap(side.size());
                 side_cache_.fill(QColor(20, 22, 28));
                 QPainter sp(&side_cache_);
@@ -201,11 +202,27 @@ private:
         const double sx = double(vr.width()) / st.fw;
         const double sy = double(vr.height()) / st.fh;
 
-        // ---- ROI：黄色淡填充 + 边框 + 四角拖拽柄 ----
-        // 拖动中优先显示“本地那份”（跟手），松手后才交回主程序回报的状态
-        const bool editing = (drag_ != DRAG_NONE) && roi_edit_valid_;
-        const QRectF roi = editing ? roi_edit_
-                                   : QRectF(st.roi_x, st.roi_y, st.roi_w, st.roi_h);
+        // ---- 取当前该显示哪个 ROI ----
+        //   拖动中            → 本地那份（跟手）
+        //   刚下发、主程序还没回报到位 → 继续显示本地值（否则会“闪回旧框”再跳到新框）
+        //   其余              → 主程序回报的真实值
+        if (pending_) {
+            const bool acked = qAbs(st.roi_x - pending_roi_.x()) < 4 &&
+                               qAbs(st.roi_y - pending_roi_.y()) < 4 &&
+                               qAbs(st.roi_w - pending_roi_.width()) < 4 &&
+                               qAbs(st.roi_h - pending_roi_.height()) < 4;
+            if (acked || pending_t_.elapsed() > 1500) pending_ = false;   // 确认到位或超时
+        }
+        QRectF roi;
+        bool editing = false;
+        if (drag_ != DRAG_NONE && roi_edit_valid_) {
+            roi = roi_edit_;
+            editing = true;
+        } else if (pending_) {
+            roi = pending_roi_;
+        } else {
+            roi = QRectF(st.roi_x, st.roi_y, st.roi_w, st.roi_h);
+        }
         if (roi.width() > 0 && roi.height() > 0) {
             const QColor rc = editing ? QColor(255, 160, 0) : QColor(255, 220, 0);
             const QRectF r(vr.x() + roi.x() * sx, vr.y() + roi.y() * sy,
@@ -240,14 +257,22 @@ private:
             }
         }
 
-        // ---- 检测框：person 红 / car 青 ----
+        // ---- 检测框：ROI 内=红/青（会报警）；ROI 外=灰色（看到了但不报警）----
+        // 判定点与 RoiMonitor 保持一致：**框底边中点**。这样屏幕上看到的颜色
+        // 就直接对应“这一帧到底会不会触发入侵”，不用去猜业务逻辑。
         p.setFont(fontFor(17));
         const QFontMetrics fm(p.font());
         for (const DetBox& b : st.dets) {
+            const double bx = (b.x1 + b.x2) / 2;
+            const double by = b.y2;
+            const bool inside = roi.width() > 0 &&
+                                bx >= roi.left() && bx <= roi.right() &&
+                                by >= roi.top()  && by <= roi.bottom();
+            const QColor c = inside ? ((b.cls_id == 0) ? QColor(255, 70, 70) : QColor(70, 200, 255))
+                                    : QColor(125, 128, 140);
             const QRectF r(vr.x() + b.x1 * sx, vr.y() + b.y1 * sy,
                            (b.x2 - b.x1) * sx, (b.y2 - b.y1) * sy);
-            const QColor c = (b.cls_id == 0) ? QColor(255, 70, 70) : QColor(70, 200, 255);
-            p.setPen(QPen(c, 3));
+            p.setPen(QPen(c, inside ? 3 : 2));
             p.drawRect(r);
 
             const QString tag = QStringLiteral("%1 %2%")
@@ -257,7 +282,7 @@ private:
             QRect t(int(r.x()), int(r.y()) - fm.height() - 6, tw, fm.height() + 6);
             if (t.y() < vr.y()) t.moveTop(int(r.y()) + 2);   // 顶部放不下就移到框内
             p.fillRect(t, c);
-            p.setPen(Qt::black);
+            p.setPen(inside ? Qt::black : QColor(230, 230, 235));
             p.drawText(t, Qt::AlignCenter, tag);
         }
     }
@@ -276,10 +301,32 @@ private:
         p.setPen(QColor(90, 200, 255));
         p.setFont(fontFor(19));
         p.drawText(x, y, QStringLiteral("RK3568 入侵检测"));
-        y += 14;
-        p.setPen(QPen(QColor(60, 70, 90), 2));
-        p.drawLine(x, y, right, y);
-        y += 32;
+        y += 16;
+
+        // 画一个圆角按钮并登记命中区；cmd 以 '@' 开头 = 本地动作（如切页），否则发给主程序
+        auto button = [&](const QRect& r, const QString& label, const QString& cmd,
+                          const QColor& bg) {
+            const bool held = (pressed_cmd_ == cmd);
+            p.setPen(Qt::NoPen);
+            p.setBrush(held ? bg.lighter(160) : bg);
+            p.drawRoundedRect(r, 6, 6);
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QColor(235, 240, 250));
+            p.setFont(fontFor(14));
+            p.drawText(r, Qt::AlignCenter, label);
+            Btn b; b.r = r; b.cmd = cmd;
+            btns_.append(b);
+        };
+
+        // ---- 页签：状态 / 参数 ----
+        {
+            const int bw = (avail - 6) / 2;
+            button(QRect(x, y, bw, 32), QStringLiteral("状态"), QStringLiteral("@page 0"),
+                   page_ == 0 ? QColor(52, 92, 140) : QColor(40, 46, 58));
+            button(QRect(x + bw + 6, y, bw, 32), QStringLiteral("参数"), QStringLiteral("@page 1"),
+                   page_ == 1 ? QColor(52, 92, 140) : QColor(40, 46, 58));
+            y += 44;
+        }
 
         p.setFont(fontFor(kPt, false));
         // 键左对齐、值右对齐；**值太长就自动缩字号**，否则会撞上键名甚至画出栏外
@@ -300,44 +347,107 @@ private:
             y += lh;
         };
 
-        line(QStringLiteral("状态通道"),
-             st.valid ? QStringLiteral("已连接") : QStringLiteral("等待中"),
-             st.valid ? QColor(120, 240, 140) : QColor(250, 190, 80));
-        line(QStringLiteral("检测帧率"), QStringLiteral("%1 fps").arg(st.fps, 0, 'f', 1));
-        line(QStringLiteral("推理帧数"), QString::number(st.infer));
-        line(QStringLiteral("事件/告警"), QStringLiteral("%1 / %2").arg(st.events).arg(st.alarms));
-        line(QStringLiteral("推流"), QStringLiteral("%1 / 丢 %2").arg(st.pushed).arg(st.dropped));
+        auto sep = [&] {
+            y += 8;
+            p.setPen(QPen(QColor(60, 70, 90), 2));
+            p.drawLine(x, y, right, y);
+            y += 26;
+        };
 
-        y += 10;
-        p.setPen(QPen(QColor(60, 70, 90), 2));
-        p.drawLine(x, y, right, y);
-        y += 32;
+        if (page_ == 0) {
+            // ================= 状态页 =================
+            line(QStringLiteral("状态通道"),
+                 st.valid ? QStringLiteral("已连接") : QStringLiteral("等待中"),
+                 st.valid ? QColor(120, 240, 140) : QColor(250, 190, 80));
+            line(QStringLiteral("检测帧率"), QStringLiteral("%1 fps").arg(st.fps, 0, 'f', 1));
+            line(QStringLiteral("推理帧数"), QString::number(st.infer));
+            line(QStringLiteral("事件/告警"), QStringLiteral("%1 / %2").arg(st.events).arg(st.alarms));
+            line(QStringLiteral("推流"), QStringLiteral("%1 / 丢 %2").arg(st.pushed).arg(st.dropped));
+            sep();
+            line(QStringLiteral("ROI"), QStringLiteral("%1,%2 %3x%4")
+                     .arg(st.roi_x).arg(st.roi_y).arg(st.roi_w).arg(st.roi_h));
+            if (roi_edit_valid_ && drag_ != DRAG_NONE)     // 手指正压在屏上拖 → 给个明确反馈
+                line(QStringLiteral("ROI 编辑中"), QStringLiteral("松手生效"), QColor(255, 180, 60));
+            line(QStringLiteral("停留阈值"), QStringLiteral("%1 s").arg(st.stay_sec));
+            line(QStringLiteral("离开去抖"), QStringLiteral("%1 帧").arg(st.leave_confirm));
+            line(QStringLiteral("conf/nms"),
+                 QStringLiteral("%1/%2").arg(st.conf, 0, 'f', 2).arg(st.nms, 0, 'f', 2));
+            line(QStringLiteral("上报 PC"),
+                 st.report_on ? QStringLiteral("开") : QStringLiteral("关"),
+                 st.report_on ? QColor(120, 240, 140) : QColor(170, 175, 190));
 
-        line(QStringLiteral("ROI"), QStringLiteral("%1,%2 %3x%4")
-                 .arg(st.roi_x).arg(st.roi_y).arg(st.roi_w).arg(st.roi_h));
-        if (roi_edit_valid_ && drag_ != DRAG_NONE)     // 手指正压在屏上拖 → 给个明确反馈
-            line(QStringLiteral("ROI 编辑中"), QStringLiteral("松手生效"), QColor(255, 180, 60));
-        line(QStringLiteral("停留阈值"), QStringLiteral("%1 s").arg(st.stay_sec));
-        line(QStringLiteral("离开去抖"), QStringLiteral("%1 帧").arg(st.leave_confirm));
-        line(QStringLiteral("conf/nms"),
-             QStringLiteral("%1/%2").arg(st.conf, 0, 'f', 2).arg(st.nms, 0, 'f', 2));
+            // ---- 最近事件（新的在上）----
+            y += 12;
+            p.setPen(QColor(90, 200, 255));
+            p.setFont(fontFor(16));
+            p.drawText(x, y, QStringLiteral("最近事件"));
+            y += 24;
+            p.setFont(fontFor(13, false));
+            if (ev_hist_.isEmpty()) {
+                p.setPen(QColor(130, 135, 150));
+                p.drawText(x, y, QStringLiteral("（暂无）"));
+            }
+            for (const QString& e : ev_hist_) {
+                if (y > s.bottom() - 14) break;
+                p.setPen(evColor(e));
+                p.drawText(x, y, e);
+                y += 21;
+            }
+        } else {
+            // ================= 参数页（把运行时控制台搬到屏上）=================
+            // 每个可调项：显示当前值 + [−] [+] 两个大按钮（触摸友好）
+            auto row = [&](const QString& label, const QString& value,
+                           const QString& cmd_dec, const QString& cmd_inc) {
+                p.setPen(QColor(150, 158, 175));
+                p.setFont(fontFor(kPt, false));
+                p.drawText(x, y, label);
+                p.setPen(QColor(235, 240, 250));
+                p.drawText(QRect(x, y - 20, avail, 24), Qt::AlignRight, value);
+                y += 22;
+                const int bw = (avail - 8) / 2;
+                button(QRect(x, y, bw, 34), QStringLiteral("−"), cmd_dec, QColor(72, 50, 52));
+                button(QRect(x + bw + 8, y, bw, 34), QStringLiteral("+"), cmd_inc, QColor(45, 74, 56));
+                y += 42;
+            };
 
-        // ---- 最近事件（新的在上）----
-        y += 14;
-        p.setPen(QColor(90, 200, 255));
-        p.setFont(fontFor(16));
-        p.drawText(x, y, QStringLiteral("最近事件"));
-        y += 26;
-        p.setFont(fontFor(13, false));
-        if (ev_hist_.isEmpty()) {
-            p.setPen(QColor(130, 135, 150));
-            p.drawText(x, y, QStringLiteral("（暂无）"));
-        }
-        for (const QString& e : ev_hist_) {
-            if (y > s.bottom() - 14) break;
-            p.setPen(evColor(e));
-            p.drawText(x, y, e);
-            y += 21;
+            row(QStringLiteral("停留阈值 (秒)"), QString::number(st.stay_sec),
+                QStringLiteral("stay %1").arg(qMax(1, st.stay_sec - 1)),
+                QStringLiteral("stay %1").arg(st.stay_sec + 1));
+            row(QStringLiteral("离开去抖 (帧)"), QString::number(st.leave_confirm),
+                QStringLiteral("leave %1").arg(qMax(1, st.leave_confirm - 1)),
+                QStringLiteral("leave %1").arg(st.leave_confirm + 1));
+            row(QStringLiteral("置信度 conf"), QString::number(st.conf, 'f', 2),
+                QStringLiteral("conf %1").arg(qMax(0.05, st.conf - 0.05), 0, 'f', 2),
+                QStringLiteral("conf %1").arg(qMin(0.95, st.conf + 0.05), 0, 'f', 2));
+            row(QStringLiteral("NMS 阈值"), QString::number(st.nms, 'f', 2),
+                QStringLiteral("nms %1").arg(qMax(0.05, st.nms - 0.05), 0, 'f', 2),
+                QStringLiteral("nms %1").arg(qMin(0.95, st.nms + 0.05), 0, 'f', 2));
+
+            // 开关类
+            button(QRect(x, y, avail, 34),
+                   st.report_on ? QStringLiteral("上报 PC：开（点击关）")
+                                : QStringLiteral("上报 PC：关（点击开）"),
+                   QStringLiteral("report %1").arg(st.report_on ? QStringLiteral("off")
+                                                                 : QStringLiteral("on")),
+                   st.report_on ? QColor(45, 74, 56) : QColor(62, 56, 44));
+            y += 44;
+
+            // 动作类
+            const int bw = (avail - 8) / 2;
+            button(QRect(x, y, bw, 34), QStringLiteral("ROI 全屏"),
+                   QStringLiteral("roi 0 0 1280 720"), QColor(52, 60, 78));
+            button(QRect(x + bw + 8, y, bw, 34), QStringLiteral("保存配置"),
+                   QStringLiteral("save"), QColor(52, 60, 78));
+            y += 42;
+            button(QRect(x, y, avail, 34), QStringLiteral("重新加载配置"),
+                   QStringLiteral("reload"), QColor(52, 60, 78));
+            y += 46;
+
+            p.setPen(QColor(140, 148, 165));
+            p.setFont(fontFor(12, false));
+            p.drawText(QRect(x, y, avail, 110), Qt::TextWordWrap,
+                       QStringLiteral("提示：ROI 也可直接在左边画面里拖动四角调整。\n"
+                                      "所有改动都是运行时热更新，不需重启程序。"));
         }
     }
 
@@ -384,6 +494,21 @@ private:
 
     void onPress(const QPointF& p) {
         const BoardState& st = link_->state();
+
+        // 0) 按钮优先：命中就按下高亮，不进入 ROI 拖动
+        if (!skip_side_) {
+            const int sbw = qBound(230, width() / 4, 400);
+            const QPoint off(width() - sbw, 0);          // 按钮 rect 是“相对右栏缓存”的坐标
+            for (const Btn& b : btns_) {
+                if (b.r.translated(off).contains(p.toPoint())) {
+                    pressed_cmd_ = b.cmd;
+                    side_dirty_ = true;
+                    update();
+                    return;
+                }
+            }
+        }
+
         if (!st.valid || st.fw <= 0 || st.roi_w <= 0) return;
         if (!roi_edit_valid_) {                 // 每次按下一份新的编辑副本
             roi_edit_ = QRectF(st.roi_x, st.roi_y, st.roi_w, st.roi_h);
@@ -417,7 +542,6 @@ private:
             update();
         }
     }
-
     void onMove(const QPointF& p) {
         if (drag_ == DRAG_NONE || !roi_edit_valid_) return;
         const BoardState& st = link_->state();
@@ -446,10 +570,25 @@ private:
         if (r.top() < 0)        r.moveTop(0);
         roi_edit_ = r;
         side_dirty_ = true;
-        update();
+        update(videoRect());      // 拖动中只刷视频区：绘制量小、跟手更紧
     }
 
     void onRelease() {
+        // 按钮释放：本地动作（@开头）或转发给主程序
+        if (!pressed_cmd_.isEmpty()) {
+            const QString c = pressed_cmd_;
+            pressed_cmd_.clear();
+            side_dirty_ = true;
+            if (c.startsWith(QLatin1Char('@'))) {
+                doLocal(c.mid(1));
+            } else if (link_->sendCommand(c)) {
+                printf("[qt] 已下发: %s\n", qPrintable(c));
+            } else {
+                printf("[qt] 状态通道未连接，命令未发出（会自动重连）\n");
+            }
+            update();
+            return;
+        }
         if (drag_ == DRAG_NONE || !roi_edit_valid_) return;
         const BoardState& st = link_->state();
         const int x = int(roi_edit_.x() + 0.5);
@@ -457,27 +596,50 @@ private:
         const int w = int(roi_edit_.width() + 0.5);
         const int h = int(roi_edit_.height() + 0.5);
         const bool moved = (x != st.roi_x || y != st.roi_y || w != st.roi_w || h != st.roi_h);
+        const QRectF local = roi_edit_;        // 先存下来：待会儿要“乐观更新”
         drag_ = DRAG_NONE;
         roi_edit_valid_ = false;               // 交回给主程序回报的状态显示
         side_dirty_ = true;
         if (moved) {
             // **松手才发命令**：拖动中每帧都发会把状态通道和主程序刷爆
             const QString cmd = QStringLiteral("roi %1 %2 %3 %4").arg(x).arg(y).arg(w).arg(h);
-            if (link_->sendCommand(cmd))
+            if (link_->sendCommand(cmd)) {
+                // 乐观更新：主程序要下一帧（~60ms）才应用，这期间状态通道里还是旧值，
+                // 若不继续显示本地值，屏幕就会“闪回旧框”再跳到新框
+                pending_roi_ = local;
+                pending_ = true;
+                pending_t_.restart();
                 printf("[qt] 已下发 ROI: %s\n", qPrintable(cmd));
-            else
+            } else {
                 printf("[qt] 状态通道未连接，ROI 命令没发出去（会自动重连）\n");
+            }
         }
         update();
+    }
+
+    // 本地动作（不发给主程序）：目前只有页签切换
+    void doLocal(const QString& a) {
+        if (a.startsWith(QStringLiteral("page "))) {
+            page_ = a.mid(5).toInt();
+            side_dirty_ = true;
+        }
     }
 
     GstSource* src_ = nullptr;
     StateLink* link_ = nullptr;
     uint16_t port_ = 0;
+    // ---- 按钮/页签（Step 3c）----
+    struct Btn { QRect r; QString cmd; };
+    QVector<Btn> btns_;               // 右栏重绘时重建
+    QString pressed_cmd_;             // 当前按下的按钮命令（高亮用）
+    int page_ = 0;                    // 0=状态页 1=参数页
     DragMode drag_ = DRAG_NONE;
     QRectF roi_edit_;                 // 拖动中的 ROI（视频坐标）
     bool roi_edit_valid_ = false;
     QPointF drag_v_;                  // 上一次触摸位置（视频坐标）
+    QRectF pending_roi_;              // 已下发、等主程序确认的 ROI（乐观更新用）
+    bool pending_ = false;
+    QElapsedTimer pending_t_;         // 等确认的超时计时
     QElapsedTimer et_;
     QImage frame_;
     QPixmap side_cache_;            // 右栏缓存（内容变化时才重画）
