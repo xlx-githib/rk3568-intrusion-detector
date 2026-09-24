@@ -401,7 +401,7 @@ private:
                            const QString& cmd_dec, const QString& cmd_inc) {
                 p.setPen(QColor(150, 158, 175));
                 p.setFont(fontFor(kPt, false));
-                p.drawText(x, y, label);
+                p.drawText(QRect(x, y - 18, avail, 22), Qt::AlignCenter, label);   // 标签居中
                 y += 24;
                 const int vw = 74;                        // 中间给数值留的宽度
                 const int bw = qMax(46, (avail - vw) / 2);
@@ -435,10 +435,14 @@ private:
                    st.report_on ? QColor(45, 74, 56) : QColor(62, 56, 44));
             y += 44;
 
-            // 动作类
+            // 动作类：ROI 全屏按钮做成**切换** —— 已全屏时高亮，再点恢复上一次的 ROI
+            const bool is_full = st.fw > 0 && st.roi_x == 0 && st.roi_y == 0 &&
+                                 st.roi_w >= st.fw && st.roi_h >= st.fh;
             const int bw = (avail - 8) / 2;
-            button(QRect(x, y, bw, 34), QStringLiteral("ROI 全屏"),
-                   QStringLiteral("roi 0 0 1280 720"), QColor(52, 60, 78));
+            button(QRect(x, y, bw, 34),
+                   is_full ? QStringLiteral("ROI 已全屏") : QStringLiteral("ROI 全屏"),
+                   QStringLiteral("@fullscreen"),
+                   is_full ? QColor(52, 92, 140) : QColor(52, 60, 78));
             button(QRect(x + bw + 8, y, bw, 34), QStringLiteral("保存配置"),
                    QStringLiteral("save"), QColor(52, 60, 78));
             y += 42;
@@ -503,10 +507,12 @@ private:
             const int sbw = qBound(230, width() / 4, 400);
             const QPoint off(width() - sbw, 0);          // 按钮 rect 是“相对右栏缓存”的坐标
             for (const Btn& b : btns_) {
-                if (b.r.translated(off).contains(p.toPoint())) {
+                // 命中区四周外扩 4px：触摸屏上差一两个像素点不中会让人很沮丧
+                if (b.r.translated(off).adjusted(-4, -4, 4, 4).contains(p.toPoint())) {
                     pressed_cmd_ = b.cmd;
                     side_dirty_ = true;
                     update();
+                    printf("[qt] 按钮命中: %s\n", qPrintable(b.cmd));
                     return;
                 }
             }
@@ -630,11 +636,38 @@ private:
         update();
     }
 
-    // 本地动作（不发给主程序）：目前只有页签切换
+    // 本地动作（不发给主程序）：页签切换 + ROI 全屏切换
     void doLocal(const QString& a) {
         if (a.startsWith(QStringLiteral("page "))) {
             page_ = a.mid(5).toInt();
             side_dirty_ = true;
+            return;
+        }
+        if (a == QStringLiteral("fullscreen")) {
+            const BoardState& st = link_->state();
+            if (st.fw <= 0) return;
+            const bool is_full = (st.roi_x == 0 && st.roi_y == 0 &&
+                                 st.roi_w >= st.fw && st.roi_h >= st.fh);
+            QRectF target;
+            if (is_full) {
+                // 已是全屏 → 恢复上一次的 ROI（没记录过就不动，避免发出无意义命令）
+                if (!have_last_roi_) return;
+                target = last_roi_;
+            } else {
+                last_roi_ = QRectF(st.roi_x, st.roi_y, st.roi_w, st.roi_h);  // 先记住
+                have_last_roi_ = true;
+                target = QRectF(0, 0, st.fw, st.fh);
+            }
+            const QString cmd = QStringLiteral("roi %1 %2 %3 %4")
+                                    .arg(int(target.x())).arg(int(target.y()))
+                                    .arg(int(target.width())).arg(int(target.height()));
+            if (link_->sendCommand(cmd)) {
+                pending_roi_ = target;      // 与拖动一致：乐观更新，避免闪回
+                pending_ = true;
+                pending_t_.restart();
+                printf("[qt] 已下发: %s\n", qPrintable(cmd));
+            }
+            return;
         }
     }
 
@@ -646,6 +679,8 @@ private:
     QVector<Btn> btns_;               // 右栏重绘时重建
     QString pressed_cmd_;             // 当前按下的按钮命令（高亮用）
     int page_ = 0;                    // 0=状态页 1=参数页
+    QRectF last_roi_;                 // 全屏前记住的 ROI（“ROI 全屏”可再次点击恢复）
+    bool have_last_roi_ = false;
     DragMode drag_ = DRAG_NONE;
     QRectF roi_edit_;                 // 拖动中的 ROI（视频坐标）
     bool roi_edit_valid_ = false;
