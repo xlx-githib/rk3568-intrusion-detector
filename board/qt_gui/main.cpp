@@ -395,19 +395,22 @@ private:
             }
         } else {
             // ================= 参数页（把运行时控制台搬到屏上）=================
-            // 每个可调项：显示当前值 + [−] [+] 两个大按钮（触摸友好）
+            // 每个可调项：标签一行，下面 [−] 当前值 [+] ——
+            // 值刻意夹在两个按钮中间（之前放在上一行右端，看着像跟按钮分了家）
             auto row = [&](const QString& label, const QString& value,
                            const QString& cmd_dec, const QString& cmd_inc) {
                 p.setPen(QColor(150, 158, 175));
                 p.setFont(fontFor(kPt, false));
                 p.drawText(x, y, label);
+                y += 24;
+                const int vw = 74;                        // 中间给数值留的宽度
+                const int bw = qMax(46, (avail - vw) / 2);
+                button(QRect(x, y, bw, 36), QStringLiteral("−"), cmd_dec, QColor(72, 50, 52));
                 p.setPen(QColor(235, 240, 250));
-                p.drawText(QRect(x, y - 20, avail, 24), Qt::AlignRight, value);
-                y += 22;
-                const int bw = (avail - 8) / 2;
-                button(QRect(x, y, bw, 34), QStringLiteral("−"), cmd_dec, QColor(72, 50, 52));
-                button(QRect(x + bw + 8, y, bw, 34), QStringLiteral("+"), cmd_inc, QColor(45, 74, 56));
-                y += 42;
+                p.setFont(fontFor(17));
+                p.drawText(QRect(x + bw, y, vw, 36), Qt::AlignCenter, value);
+                button(QRect(x + bw + vw, y, bw, 36), QStringLiteral("+"), cmd_inc, QColor(45, 74, 56));
+                y += 46;
             };
 
             row(QStringLiteral("停留阈值 (秒)"), QString::number(st.stay_sec),
@@ -551,23 +554,33 @@ private:
         drag_v_ = v;
 
         QRectF r = roi_edit_;
-        switch (drag_) {
-            case DRAG_MOVE: r.translate(dx, dy); break;
-            case DRAG_TL:   r.setTopLeft(r.topLeft() + QPointF(dx, dy)); break;
-            case DRAG_TR:   r.setTopRight(r.topRight() + QPointF(dx, dy)); break;
-            case DRAG_BL:   r.setBottomLeft(r.bottomLeft() + QPointF(dx, dy)); break;
-            case DRAG_BR:   r.setBottomRight(r.bottomRight() + QPointF(dx, dy)); break;
-            default: break;
+        if (drag_ == DRAG_MOVE) {
+            // ---- 整体平移：**只夹位置、不裁尺寸** ----
+            // 曾经统一走 intersect(画面) 导致：全屏 ROI 拖动时尺寸被越夹越小，
+            // 几下就缩到最小尺寸卡死 → 看起来像“ROI 全屏后就拖不动了”。
+            r.translate(dx, dy);
+            if (r.left() < 0)      r.moveLeft(0);
+            if (r.top() < 0)       r.moveTop(0);
+            if (r.right() > st.fw) r.moveRight(st.fw);
+            if (r.bottom() > st.fh) r.moveBottom(st.fh);
+        } else {
+            // ---- 缩放：拖角方向任意，先规范化再夹到画面内 ----
+            switch (drag_) {
+                case DRAG_TL: r.setTopLeft(r.topLeft() + QPointF(dx, dy)); break;
+                case DRAG_TR: r.setTopRight(r.topRight() + QPointF(dx, dy)); break;
+                case DRAG_BL: r.setBottomLeft(r.bottomLeft() + QPointF(dx, dy)); break;
+                case DRAG_BR: r.setBottomRight(r.bottomRight() + QPointF(dx, dy)); break;
+                default: break;
+            }
+            r = r.normalized().intersected(QRectF(0, 0, st.fw, st.fh));
+            const double kMin = 60;          // 太小的 ROI 没意义，也不好再点中
+            if (r.width() < kMin)  r.setWidth(kMin);
+            if (r.height() < kMin) r.setHeight(kMin);
+            if (r.right() > st.fw)  r.moveRight(st.fw);
+            if (r.bottom() > st.fh) r.moveBottom(st.fh);
+            if (r.left() < 0)       r.moveLeft(0);
+            if (r.top() < 0)        r.moveTop(0);
         }
-        // normalized()：拖过头会把矩形拖翻，先规范化；再限到画面内 + 保底最小尺寸
-        r = r.normalized().intersected(QRectF(0, 0, st.fw, st.fh));
-        const double kMin = 60;
-        if (r.width() < kMin)  r.setWidth(kMin);
-        if (r.height() < kMin) r.setHeight(kMin);
-        if (r.right() > st.fw)  r.moveRight(st.fw);
-        if (r.bottom() > st.fh) r.moveBottom(st.fh);
-        if (r.left() < 0)       r.moveLeft(0);
-        if (r.top() < 0)        r.moveTop(0);
         roi_edit_ = r;
         side_dirty_ = true;
         update(videoRect());      // 拖动中只刷视频区：绘制量小、跟手更紧
